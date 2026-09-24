@@ -133,10 +133,15 @@ internal sealed class PerGroupTransform(Func<Point, PointKey> keySelector, ITran
     }
 }
 
-internal sealed class ResampleTransform(IPeriod period, IAggregator aggregator, GapPolicy gap) : ITransform
+/// <summary>Public so the engine can recognise a leading resample and push it down to a capable source.</summary>
+public sealed class ResampleTransform(IPeriod period, IAggregator aggregator, GapPolicy gap) : ITransform
 {
+    public IPeriod Period { get; } = period;
+    public IAggregator Aggregator { get; } = aggregator;
+    public GapPolicy Gap { get; } = gap;
+
     public PointBlock Apply(PointBlock input, TransformContext ctx) =>
-        Resampler.Resample(input, period, aggregator, gap, ctx.Calendar);
+        Resampler.Resample(input, Period, Aggregator, Gap, ctx.Calendar);
 }
 
 internal sealed class RollingTransform(TimeSpan window, IAggregator aggregator) : ITransform

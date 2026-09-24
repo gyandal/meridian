@@ -35,23 +35,37 @@ public sealed class ReportEngine(
             throw new InvalidOperationException($"Unknown metric '{spec.Metric}'. Is it in the catalog?");
         }
 
+        var transforms = spec.Transforms;
+        var signature = "source"; // caches the raw fetch; transforms run after the merge
+        PointLoader loader = (missing, token) => source.FetchAsync(metric, missing, spec.Timeframe, token);
+
+        // Pushdown: a leading resample the source can compute is done where the data lives.
+        if (transforms.Length > 0 && transforms[0] is ResampleTransform resample && source is IRollupPointSource rollupSource)
+        {
+            var rollup = new SourceRollup(resample.Period, resample.Aggregator, options.Calendar);
+            if (rollupSource.CanRollup(metric, rollup))
+            {
+                signature = rollup.Signature;
+                loader = (missing, token) => rollupSource.FetchRollupAsync(metric, missing, spec.Timeframe, rollup, token);
+                // One point per bucket, so re-resampling with Last leaves values untouched while applying
+                // the gap policy exactly as the in-engine resample would.
+                transforms = transforms.SetItem(0, Transform.Resample(resample.Period, Aggregators.Last, resample.Gap));
+            }
+        }
+
         var entityDimension = spec.Entities[0].Dimension;
         var scope = new CacheScope(
             Tenant: spec.Tenant,
             Metric: metric.Id.Value,
             EntityDimension: entityDimension,
             Timeframe: spec.Timeframe,
-            Signature: "source"); // caches the raw fetch; transforms run after the merge
+            Signature: signature);
 
-        var raw = await cache.GetOrLoadAsync(
-            scope,
-            spec.Entities,
-            (missing, token) => source.FetchAsync(metric, missing, spec.Timeframe, token),
-            ct).ConfigureAwait(false);
+        var raw = await cache.GetOrLoadAsync(scope, spec.Entities, loader, ct).ConfigureAwait(false);
 
         var transformContext = new TransformContext(options.Calendar);
         var current = raw;
-        foreach (var transform in spec.Transforms)
+        foreach (var transform in transforms)
         {
             current = transform.Apply(current, transformContext);
         }

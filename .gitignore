@@ -484,3 +484,6 @@ $RECYCLE.BIN/
 # Local artifacts
 artifacts/
 BenchmarkDotNet.Artifacts/
+
+# Generated benchmark datasets (can be many GB)
+data/

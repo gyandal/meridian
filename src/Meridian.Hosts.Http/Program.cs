@@ -49,6 +49,10 @@ app.MapGet("/api/showcase", () =>
     return Results.Json(payload);
 });
 
+// Scale-benchmark results (bench/results/*.json), newest first, plus per-dataset history charts.
+app.MapGet("/api/benchmarks", (IConfiguration config, IWebHostEnvironment env) =>
+    Results.Json(Benchmarks.Load(Benchmarks.ResultsDirectory(config, env.ContentRootPath))));
+
 // Live cache stat — proves repeat runs don't re-hit the source.
 app.MapGet("/api/stats", () => Results.Json(new { entitySlicesFetched = source.EntitySlicesFetched }));
 

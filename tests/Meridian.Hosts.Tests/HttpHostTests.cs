@@ -105,6 +105,52 @@ public class HttpHostTests(WebApplicationFactory<Program> factory) : IClassFixtu
     }
 
     [Fact]
+    public async Task Benchmarks_serves_runs_newest_first_with_a_history_chart_per_dataset()
+    {
+        var dir = Directory.CreateTempSubdirectory("meridian-bench-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "a.json"), RunJson("2026-01-01T00:00:00Z", rows: 1000, warmMs: 2.0));
+            File.WriteAllText(Path.Combine(dir, "b.json"), RunJson("2026-02-01T00:00:00Z", rows: 1000, warmMs: 1.0));
+            File.WriteAllText(Path.Combine(dir, "c.json"), RunJson("2026-03-01T00:00:00Z", rows: 5000, warmMs: 3.0));
+            File.WriteAllText(Path.Combine(dir, "notes.json"), """{"not":"a run"}""");
+
+            var client = _factory.WithWebHostBuilder(b => b.UseSetting("Meridian:BenchmarkResults", dir)).CreateClient();
+            using var doc = JsonDocument.Parse(await client.GetStringAsync("/api/benchmarks"));
+            var root = doc.RootElement;
+
+            var runs = root.GetProperty("runs").EnumerateArray().ToList();
+            Assert.Equal(3, runs.Count); // the non-run file is ignored
+            Assert.Equal("2026-03-01T00:00:00Z", runs[0].GetProperty("timestampUtc").GetString());
+
+            var histories = root.GetProperty("histories").EnumerateArray().ToList();
+            Assert.Equal([5000L, 1000L], histories.Select(h => h.GetProperty("datasetRows").GetInt64()));
+            var series = histories[1].GetProperty("chartView").GetProperty("series")[0];
+            Assert.Equal("warm", series.GetProperty("name").GetString());
+            Assert.Equal([2.0, 1.0], series.GetProperty("marks").EnumerateArray().Select(m => m.GetProperty("value").GetDouble()));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+
+        static string RunJson(string timestamp, long rows, double warmMs) => $$"""
+            {"timestampUtc":"{{timestamp}}","dataset":{"rows":{{rows}}},
+             "scenarios":[{"id":"warm","name":"Warm","medianMs":{{warmMs}}}]}
+            """;
+    }
+
+    [Fact]
+    public async Task Benchmarks_is_empty_not_an_error_when_there_are_no_results()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"meridian-none-{Guid.NewGuid():N}");
+        var client = _factory.WithWebHostBuilder(b => b.UseSetting("Meridian:BenchmarkResults", missing)).CreateClient();
+        using var doc = JsonDocument.Parse(await client.GetStringAsync("/api/benchmarks"));
+        Assert.False(doc.RootElement.GetProperty("found").GetBoolean());
+        Assert.Equal(0, doc.RootElement.GetProperty("runs").GetArrayLength());
+    }
+
+    [Fact]
     public async Task Dashboard_page_is_served()
     {
         var client = _factory.CreateClient();

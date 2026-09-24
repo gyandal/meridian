@@ -20,15 +20,19 @@ src/
   Meridian.Views/       ChartView view model (chart-agnostic); ViewSpec; ITheme/ILabelResolver/
                         IValueFormatter; ChartProjector (data → view; colour/label/status live HERE)
   Meridian.Views.Json/  source-generated System.Text.Json wire contract for ChartView
-  Meridian.Engine/      IPointSource seam; PipelineSpec; ReportEngine (catalog → cache → transforms →
-                        project); MeridianRuntime.InMemory wiring; InMemoryPointSource
+  Meridian.Engine/      IPointSource seam (+ optional IRollupPointSource pushdown); PipelineSpec;
+                        ReportEngine (catalog → cache → transforms → project); MeridianRuntime.InMemory
   Meridian.Hosts.Http/  minimal API over the engine (/api/catalog, /api/report) + the dashboard page
   Meridian.Hosts.Mcp/   agent tool surface: describe + query over the engine (transport-agnostic)
   Meridian.Sources.MySql/  a real IPointSource over a MySQL datapoints table (MySqlConnector)
+  Meridian.Sources.DuckDb/ IRollupPointSource over DuckDB tables or Parquet files, resample pushed into SQL
   Meridian.Semantics/   MetricDefinition / IMetricCatalog shape sketch
-tests/                  Core (15) + Time (15) + Transforms (8) + Caching (17) + Views (8) + Engine (5) + Hosts (7)
+tests/                  Core (15) + Time (15) + Transforms (8) + Caching (17) + Views (8) + Engine (5) + Hosts (9)
+                        + DuckDb source (89, incl. pushdown-vs-engine parity for every period × aggregator × gap)
 bench/
   Meridian.Benchmarks/  BenchmarkDotNet hot-path suite ([MemoryDiagnoser])
+  Meridian.Bench.Scale/ generate millions–billions of rows as Parquet, time cold/warm/pushdown → bench/results/*.json
+  results/              committed scale-run results, charted by the dashboard's Benchmarks section
 samples/
   Meridian.Sample/          load → weekly resample → project → JSON (offline)
   Meridian.Sample.Weather/  real Open-Meteo public API → engine → JSON (needs internet)
@@ -36,7 +40,7 @@ samples/
   dashboard-snapshot.html   a rendered ChartView gallery (static, shareable)
 ```
 
-`dotnet test` → 75 passing. Targets **net10.0**, nullable + warnings-as-errors.
+`dotnet test` → 166 passing. Targets **net10.0**, nullable + warnings-as-errors.
 Run the dashboard: `dotnet run --project src/Meridian.Hosts.Http` then open the printed URL.
 Time a source: `dotnet run -c Release --project samples/Meridian.Bench.Source` (add `-- --mysql "<conn>" <metric> 1,2,3` for a real DB).
 
@@ -131,6 +135,35 @@ Both are covered by in-process integration tests (`WebApplicationFactory` for HT
 Aggregation is already allocation-free. ACWR's 146 KB is the dictionary-grouping in `Rolling`/
 `Resampler` — the exact thing the columnar/SIMD pass exists to remove. Run: `dotnet run -c Release
 --project bench/Meridian.Benchmarks`.
+
+## Scale benchmarks
+
+`bench/Meridian.Bench.Scale` generates a synthetic dataset as Parquet and times one report — weekly mean
+of one metric for 25 entities over a year — through every path. Measured on an i7-8700K (6 cores),
+32 GB, Windows 11, DuckDB 1.5.5, over **171.7M rows** (5 metrics × 2,000 entities × 2 years × hourly,
+577 MB Parquet; 215k raw rows in the report's scope):
+
+| Scenario | Median | What it shows |
+|---|---:|---|
+| Hand-written SQL | 88 ms | the floor: one DuckDB `GROUP BY`, results read into memory |
+| Cold · raw fetch | 295 ms | empty cache, every raw row moved into Meridian and resampled there |
+| **Cold · pushdown** | **97 ms** | empty cache, resample pushed into SQL — within ~10 ms of hand-written SQL |
+| **Warm · cached** | **0.72 ms** | repeat report, source untouched — ~120× faster than querying the store |
+| Warm · +1 entity | 33 ms | only the new entity is fetched; the rest merge from cache |
+| Warm · 1 entity changed | 31 ms | a write invalidates one entity; only its slice is refetched |
+| Cold · 28-day rolling mean | 91 ms | daily means pushed down, rolling window per entity in the engine |
+
+The takeaways: pushdown makes Meridian's cold path cost about the same as writing the SQL yourself, and
+everything after the first run is served from cache. The incremental scenarios are dominated by the
+store's fixed per-query cost (opening Parquet metadata), not by row volume. "Cold" means Meridian's cache
+is empty; the OS file cache is warm, as on a live server. Full results, including p95, are in
+`bench/results/` and charted in the dashboard's **Benchmarks** section.
+
+**Pushdown** (`IRollupPointSource`): when a report starts with a resample the source can compute exactly
+(DuckDB: UTC day / Monday-week / month buckets with mean, sum, min, max, count, median or last), the
+engine asks for one point per entity-bucket instead of every raw row. Anything else — local-time
+buckets, seasons, custom aggregators — falls back to a raw fetch, so results never change; a parity test
+checks every period × aggregator × gap policy against the in-engine resample.
 
 ## What the design guarantees
 

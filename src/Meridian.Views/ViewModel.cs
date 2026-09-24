@@ -61,8 +61,8 @@ public sealed record AxisView(AxisKind Kind, string Title, double? Min = null, d
 
 public sealed record LegendView(IReadOnlyList<string> Series);
 
-/// <summary>Fixture lines, injury bands, targets — carried as DATA (kind + value + status), not as the
-/// old hard-coded hex/HTML overlays baked into the transform base.</summary>
+/// <summary>Fixture lines, injury bands, targets — carried as DATA (kind + value + status), not as
+/// hard-coded hex/HTML overlays baked into a transform.</summary>
 public sealed record AnnotationView(
     AnnotationKind Kind,
     string Label,

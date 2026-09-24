@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Meridian.Core/Meridian.Core.csproj" />
+    <ProjectReference Include="../../src/Meridian.Time/Meridian.Time.csproj" />
+    <ProjectReference Include="../../src/Meridian.Transforms/Meridian.Transforms.csproj" />
+    <ProjectReference Include="../../src/Meridian.Semantics/Meridian.Semantics.csproj" />
+    <ProjectReference Include="../../src/Meridian.Caching/Meridian.Caching.csproj" />
+    <ProjectReference Include="../../src/Meridian.Views/Meridian.Views.csproj" />
+    <ProjectReference Include="../../src/Meridian.Engine/Meridian.Engine.csproj" />
+    <ProjectReference Include="../../src/Meridian.Sources.DuckDb/Meridian.Sources.DuckDb.csproj" />
+  </ItemGroup>
+</Project>

@@ -2,15 +2,15 @@
 
 ## Prerequisites
 
-- **.NET 10 SDK** (`dotnet --version` → `10.x`). Nothing else — no database is needed for the tests,
-  dashboard, or samples (they use in-memory/offline data). The weather sample needs internet; the MySQL
+- **.NET 10 SDK** (`dotnet --version` → `10.x`). Nothing else — no database server is needed for the
+  tests, dashboard, or samples (they use in-memory/offline data; DuckDB is embedded via NuGet). The weather sample needs internet; the MySQL
   source needs a MySQL server only if you point it at one.
 
 ## Everything at once
 
 ```bash
-dotnet build   -c Release        # build all 12 libraries + hosts + samples
-dotnet test    -c Debug          # run all 75 tests across 7 projects
+dotnet build   -c Release        # build all libraries, hosts, samples and benchmarks
+dotnet test    -c Debug          # run all 166 tests across 8 projects
 ```
 
 ## The dashboard (start here)
@@ -46,6 +46,24 @@ dotnet run -c Release --project samples/Meridian.Bench.Source
 dotnet run -c Release --project samples/Meridian.Bench.Source -- --mysql "Server=…;Database=…;Uid=…;Pwd=…" <metric> 1,2,3,4
 ```
 
+## Scale benchmarks (millions → billions of rows)
+
+`bench/Meridian.Bench.Scale` generates a synthetic longitudinal dataset as Parquet (entirely inside
+DuckDB, so it never touches .NET memory), then times one report through every path: hand-written SQL,
+cold raw fetch, cold with the resample pushed into SQL, warm cache, +1 entity, 1 entity invalidated, and
+a 28-day rolling mean. Results are written to `bench/results/*.json` and appear in the dashboard under
+**Benchmarks** (commit them to keep the history).
+
+```bash
+# rows = entities × metrics × days × per-day × (1 − gap%)
+dotnet run -c Release --project bench/Meridian.Bench.Scale -- generate --entities 2000 --metrics 5 --days 730 --per-day 24 --data data/bench-175m
+dotnet run -c Release --project bench/Meridian.Bench.Scale -- run --data data/bench-175m --label my-machine
+dotnet run -c Release --project bench/Meridian.Bench.Scale -- all --entities 200 --days 365   # small, both steps
+```
+
+~172M rows is ~0.6 GB of Parquet and ~2 minutes to generate on a 6-core desktop; ~1B rows is a few GB.
+`data/` is git-ignored.
+
 ## Micro-benchmarks (BenchmarkDotNet)
 
 ```bash
@@ -66,6 +84,8 @@ src/Meridian.Engine       PipelineSpec + ReportEngine (catalog → cache → tra
 src/Meridian.Hosts.Http   REST + the dashboard
 src/Meridian.Hosts.Mcp    agent tool surface (describe + query)
 src/Meridian.Sources.MySql a real IPointSource over a MySQL datapoints table
+src/Meridian.Sources.DuckDb DuckDB/Parquet source with resample pushdown (IRollupPointSource)
+bench/Meridian.Bench.Scale  dataset generator + scale timing harness → bench/results
 ```
 
 See `README.md` for the design story, `docs/USAGE.md` for a worked real-world example (goals this
@@ -80,7 +100,7 @@ orients a fresh session and lists the concrete next steps.
 
 > This is **Meridian**, a greenfield .NET 10 framework for longitudinal datapoints → transforms →
 > chart-agnostic views, with a pluggable cache. Read `PLAN.md` (architecture + parked ideas §17b),
-> `README.md`, and `docs/USAGE.md` first, then `dotnet test` to confirm the 75 tests pass.
+> `README.md`, and `docs/USAGE.md` first, then `dotnet test` to confirm the tests pass.
 >
 > Context: clean layers — the datum carries
 > no presentation, time is typed/DST-correct, the cache does per-entity partial-hit merging with

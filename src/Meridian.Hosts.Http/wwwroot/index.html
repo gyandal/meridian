@@ -46,14 +46,26 @@
   .card .ch{padding:14px 16px 8px;} .card .t{font-weight:600;font-size:14.5px;}
   .card .feat{font-family:var(--mono);font-size:10.5px;letter-spacing:.03em;color:var(--accent);background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 20%,transparent);padding:2px 8px;border-radius:6px;display:inline-block;margin-top:6px;}
   .card .cap{color:var(--dim);font-size:12.5px;padding:2px 16px 10px;} .card .legend{padding:0 16px 6px;} .card svg{padding:0 6px;}
-  @media(max-width:820px){.builder{grid-template-columns:1fr;}.gallery{grid-template-columns:1fr;}}
+  .bench .hd select{width:auto;min-width:240px;}
+  .bmeta{display:flex;flex-wrap:wrap;gap:8px 22px;padding:12px 18px;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--dim);}
+  .bmeta b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums;}
+  .btable{width:100%;border-collapse:collapse;font-size:13px;}
+  .btable th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:600;padding:10px 18px 6px;}
+  .btable td{padding:9px 18px;border-top:1px solid var(--line);vertical-align:top;}
+  .btable td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;}
+  .btable th.n{text-align:right;}
+  .btable .nm{font-weight:600;} .btable .ds{color:var(--dim);font-size:12px;margin-top:2px;}
+  .bar{height:8px;border-radius:4px;background:var(--accent);min-width:3px;} .barcell{width:28%;padding-top:15px!important;}
+  .toggles span{cursor:pointer;user-select:none;} .toggles span.off{opacity:.35;}
+  .empty{padding:22px 18px;color:var(--dim);font-size:13.5px;} .empty code{font-family:var(--mono);font-size:12px;background:var(--soft);padding:2px 6px;border-radius:5px;}
+  @media(max-width:820px){.builder{grid-template-columns:1fr;}.gallery{grid-template-columns:1fr;}.barcell{display:none;}}
 </style>
 </head>
 <body>
 <header class="top">
   <svg class="g" viewBox="0 0 26 34" fill="none" aria-hidden="true"><ellipse cx="13" cy="17" rx="12" ry="16.4" stroke="var(--accent)" stroke-width="1.5"/><path d="M13 .6v32.8M1 17h24" stroke="var(--accent)" stroke-width="1.5" opacity=".5"/><circle cx="13" cy="10.4" r="2.3" fill="var(--accent)"/></svg>
   <h1>Meridian</h1><span class="sub">feature dashboard</span>
-  <nav><a href="#builder">Builder</a><a href="#showcase">Feature showcase</a></nav>
+  <nav><a href="#builder">Builder</a><a href="#showcase">Feature showcase</a><a href="#benchmarks">Benchmarks</a></nav>
 </header>
 
 <div class="wrap">
@@ -84,6 +96,17 @@
 
   <h2 class="sec" id="showcase">Feature showcase — every capability, server-computed</h2>
   <div class="gallery" id="gallery"></div>
+
+  <h2 class="sec" id="benchmarks">Benchmarks — measured at scale, not claimed</h2>
+  <div class="panel bench">
+    <div class="hd"><span class="t">Scale run</span><select id="benchRun" aria-label="benchmark run"></select></div>
+    <div id="benchBody"></div>
+  </div>
+  <div class="panel bench" style="margin-top:16px" id="histPanel">
+    <div class="hd"><span class="t">History · median ms per scenario</span><span class="stat" id="histStat"></span></div>
+    <div class="legend toggles" id="histLegend"></div>
+    <svg id="histChart" viewBox="0 0 900 300" role="img" aria-label="benchmark history"></svg>
+  </div>
 </div>
 
 <script>
@@ -102,6 +125,7 @@ function renderChart(svg, view){
   const vals=marks.map(k=>k.value).filter(v=>v!=null);
   let ymin=yA.min!=null?yA.min:Math.min(...vals), ymax=yA.max!=null?yA.max:Math.max(...vals);
   if(ymin===ymax){ymin-=1;ymax+=1;} const padv=(ymax-ymin)*0.12; ymin-=padv; ymax+=padv;
+  if(ymin<0 && Math.min(...vals)>=0) ymin=0;
   if(ymin>0 && view.kind!=="Line") ymin=Math.min(0,ymin);
   const Y=v=>m.t+ih-(v-ymin)/(ymax-ymin)*ih;
 
@@ -203,7 +227,51 @@ async function loadGallery(){
     <div class="cap">${p.caption}</div></div>`).join("");
   panels.forEach(p=>{renderChart($("#sv-"+p.id),p.chartView);$("#lg-"+p.id).innerHTML=legendHtml(p.chartView);});
 }
-boot();
+// ---------- benchmarks ----------
+let bench=null, histOff=new Set(["warm","incremental","invalidate-one"]);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ms=v=>v>=1000?(v/1000).toFixed(2)+" s":v>=10?v.toFixed(0)+" ms":v>=1?v.toFixed(1)+" ms":v.toFixed(2)+" ms";
+const big=n=>n>=1e9?(n/1e9).toFixed(2)+"B":n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(0)+"k":String(n);
+async function loadBenchmarks(){
+  bench=await (await fetch("/api/benchmarks")).json();
+  if(!bench.runs.length){
+    $("#benchRun").style.display="none"; $("#histPanel").style.display="none";
+    $("#benchBody").innerHTML=`<div class="empty">No results yet. Generate data and run the harness:<br><br><code>dotnet run -c Release --project bench/Meridian.Bench.Scale -- all --entities 200 --days 365</code></div>`;
+    return;
+  }
+  $("#benchRun").innerHTML=bench.runs.map((r,i)=>`<option value="${i}">${esc(r.label)} · ${big(r.dataset.rows)} rows · ${r.timestampUtc.slice(0,10)}${r.commit?" · "+esc(r.commit):""}</option>`).join("");
+  $("#benchRun").onchange=()=>{renderRun(+$("#benchRun").value);renderHistory();};
+  renderRun(0); renderHistory();
+}
+function renderRun(i){
+  const r=bench.runs[i], sc=r.scenarios, spec=r.dataset.spec;
+  const base=sc.find(s=>s.id==="cold-raw");
+  const lo=Math.log10(Math.min(...sc.map(s=>s.medianMs))), hi=Math.log10(Math.max(...sc.map(s=>s.medianMs)));
+  const w=v=>hi===lo?100:4+96*(Math.log10(v)-lo)/(hi-lo);
+  $("#benchBody").innerHTML=`<div class="bmeta">
+      <span>data <b>${big(r.dataset.rows)} rows</b> · ${(r.dataset.bytes/1048576).toFixed(0)} MB Parquet</span>
+      <span>shape <b>${spec.metrics} metrics × ${spec.entities.toLocaleString()} entities × ${spec.days} days × ${spec.perDay}/day</b></span>
+      <span>report <b>${esc(r.report.transform)} · ${r.report.entities} entities · ${r.report.days} days · ${big(r.report.rawRowsInScope)} raw rows</b></span>
+      <span>machine <b>${esc(r.machine.cpu)}</b> · ${r.machine.logicalCores} threads · ${esc(r.machine.os)}</span>
+      <span>DuckDB <b>${esc(r.machine.duckDb)}</b></span></div>
+    <table class="btable"><thead><tr><th>Scenario</th><th class="n">median</th><th class="n">p95</th><th class="n">vs cold raw</th><th class="barcell">log scale</th></tr></thead><tbody>
+    ${sc.map(s=>`<tr><td><div class="nm">${esc(s.name)}</div><div class="ds">${esc(s.description)}</div></td>
+      <td class="n">${ms(s.medianMs)}</td><td class="n">${ms(s.p95Ms)}</td>
+      <td class="n">${base&&s.id!=="cold-raw"?(base.medianMs/s.medianMs).toFixed(1)+"×":"—"}</td>
+      <td class="barcell"><div class="bar" style="width:${w(s.medianMs).toFixed(1)}%"></div></td></tr>`).join("")}
+    </tbody></table>`;
+}
+function renderHistory(){
+  const run=bench.runs[+$("#benchRun").value||0];
+  const h=bench.histories.find(x=>x.datasetRows===run.dataset.rows)||bench.histories[0];
+  const all=h.chartView;
+  $("#histStat").textContent=`${h.runs} run${h.runs===1?"":"s"} on ${big(h.datasetRows)} rows`;
+  $("#histLegend").innerHTML=all.series.map(s=>`<span data-s="${esc(s.name)}" class="${histOff.has(s.name)?"off":""}"><i style="background:${s.colorToken}"></i>${esc(s.name)}</span>`).join("");
+  $("#histLegend").onclick=ev=>{const t=ev.target.closest("span");if(!t)return;const n=t.dataset.s;histOff.has(n)?histOff.delete(n):histOff.add(n);renderHistory();};
+  const shown={...all,series:all.series.filter(s=>!histOff.has(s.name))};
+  if(shown.series.length) renderChart($("#histChart"),shown); else $("#histChart").replaceChildren();
+}
+boot(); loadBenchmarks();
 </script>
 </body>
 </html>

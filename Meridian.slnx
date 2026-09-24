@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/bench/">
+    <Project Path="bench/Meridian.Bench.Scale/Meridian.Bench.Scale.csproj" />
     <Project Path="bench/Meridian.Benchmarks/Meridian.Benchmarks.csproj" />
   </Folder>
   <Folder Name="/samples/">
@@ -14,6 +15,7 @@
     <Project Path="src/Meridian.Hosts.Http/Meridian.Hosts.Http.csproj" />
     <Project Path="src/Meridian.Hosts.Mcp/Meridian.Hosts.Mcp.csproj" />
     <Project Path="src/Meridian.Semantics/Meridian.Semantics.csproj" />
+    <Project Path="src/Meridian.Sources.DuckDb/Meridian.Sources.DuckDb.csproj" />
     <Project Path="src/Meridian.Sources.MySql/Meridian.Sources.MySql.csproj" />
     <Project Path="src/Meridian.Time/Meridian.Time.csproj" />
     <Project Path="src/Meridian.Transforms/Meridian.Transforms.csproj" />
@@ -25,6 +27,7 @@
     <Project Path="tests/Meridian.Core.Tests/Meridian.Core.Tests.csproj" />
     <Project Path="tests/Meridian.Engine.Tests/Meridian.Engine.Tests.csproj" />
     <Project Path="tests/Meridian.Hosts.Tests/Meridian.Hosts.Tests.csproj" />
+    <Project Path="tests/Meridian.Sources.DuckDb.Tests/Meridian.Sources.DuckDb.Tests.csproj" />
     <Project Path="tests/Meridian.Time.Tests/Meridian.Time.Tests.csproj" />
     <Project Path="tests/Meridian.Transforms.Tests/Meridian.Transforms.Tests.csproj" />
     <Project Path="tests/Meridian.Views.Tests/Meridian.Views.Tests.csproj" />
