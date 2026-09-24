@@ -52,12 +52,35 @@ public sealed class DuckDbFixture : IDisposable
             FROM range(1, 4) AS e(entity_id), range(0, 120) AS d(d)
             WHERE hash(e.entity_id * 31 + d.d) % 6 <> 0;
 
+            CREATE TABLE typed (entity_id INTEGER, metric VARCHAR, ts TIMESTAMP, value DECIMAL(10, 2));
+            INSERT INTO typed VALUES (1, 'typed', TIMESTAMP '2025-02-01 10:00', 12.50), (1, 'typed', TIMESTAMP '2025-02-02 10:00', 7.25);
+
             CREATE TABLE legacy (entity_id BIGINT, metric VARCHAR, ts TIMESTAMP, value DOUBLE);
             INSERT INTO legacy VALUES
                 (1, 'legacy', TIMESTAMP '2025-03-30 00:30:00', 1),   -- before the spring gap
                 (1, 'legacy', TIMESTAMP '2025-03-30 01:30:00', 2),   -- never happens in London
                 (1, 'legacy', TIMESTAMP '2025-07-01 12:00:00', 3),   -- summer: UTC+1
                 (1, 'legacy', TIMESTAMP '2025-10-26 01:30:00', 4);   -- happens twice in London
+
+            -- New York wall-clock readings every 10 minutes around both 2025 DST changes, as a system that
+            -- logs local time would store them: the skipped spring hour has rows, and the repeated autumn
+            -- hour is logged twice (the second pass offset by 5 minutes, so no two rows tie).
+            CREATE TABLE legacy_ny AS
+            WITH walls AS (
+                SELECT e.entity_id, TIMESTAMP '2025-03-01' + to_minutes(m.m * 10) AS ts, m.m
+                FROM range(1, 3) AS e(entity_id), range(0, 20 * 144) AS m(m)
+                UNION ALL
+                SELECT e.entity_id, TIMESTAMP '2025-10-20' + to_minutes(m.m * 10), m.m + 100000
+                FROM range(1, 3) AS e(entity_id), range(0, 26 * 144) AS m(m)
+                UNION ALL
+                SELECT e.entity_id, TIMESTAMP '2025-11-02 01:05' + to_minutes(m.m * 10), m.m + 200000
+                FROM range(1, 3) AS e(entity_id), range(0, 6) AS m(m)
+            )
+            SELECT entity_id, 'legacy-ny' AS metric, ts,
+                   CASE WHEN hash(entity_id * 131 + m) % 13 = 0 THEN NULL
+                        ELSE CAST(hash(entity_id * 977 + m) % 500 AS DOUBLE) / 10 END AS value
+            FROM walls
+            WHERE hash(entity_id * 17 + m) % 9 <> 0;
             """;
         cmd.ExecuteNonQuery();
     }
@@ -83,7 +106,8 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     private static readonly MetricDefinition LoadDef = new(new MetricId("load"), "Load", new Unit("au"), "mean", [Athlete], TimeGrain.Instant);
     private static readonly MetricDefinition WellnessDef = new(new MetricId("wellness"), "Wellness", new Unit("score"), "mean", [Athlete], TimeGrain.Daily, TimeKind.Local);
     private static readonly MetricDefinition LegacyDef = new(new MetricId("legacy"), "Legacy", new Unit("au"), "mean", [Athlete], TimeGrain.Instant);
-    private static readonly InMemoryMetricCatalog Catalog = new([LoadDef, WellnessDef, LegacyDef]);
+    private static readonly MetricDefinition LegacyNyDef = new(new MetricId("legacy-ny"), "Legacy NY", new Unit("au"), "mean", [Athlete], TimeGrain.Instant);
+    private static readonly InMemoryMetricCatalog Catalog = new([LoadDef, WellnessDef, LegacyDef, LegacyNyDef]);
 
     // Starts mid-day and ends mid-week so partial first/last buckets are exercised on both paths.
     private static readonly DateInterval Timeframe = new(
@@ -238,24 +262,82 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.Equal(1.0, block.Values[0]);
     }
 
-    [Theory]
-    [InlineData("season", "UTC", false)]            // domain seasons have no SQL equivalent
-    [InlineData("day", "Europe/London", true)]      // wall-clock-in-zone data: DST resolution stays in the engine
-    public async Task Unsupported_rollups_fall_back_to_a_raw_fetch_and_stay_correct(string period, string zone, bool legacyWallClock)
+    public static TheoryData<AmbiguousTime, string, string, string> WallClockCases()
     {
-        var (metric, source) = legacyWallClock
-            ? (LegacyDef, Source("legacy", StoredTime.InZone("Europe/London")))
-            : (LoadDef, Source());
-        var wide = new DateInterval(Instant.FromUtc(new DateTime(2025, 1, 1)), Instant.FromUtc(new DateTime(2026, 1, 1)));
-        var spec = Spec(metric, PeriodNamed(period), Aggregators.Mean, GapPolicy.LeaveMissing, wide);
+        var data = new TheoryData<AmbiguousTime, string, string, string>();
+        foreach (var ambiguous in new[] { AmbiguousTime.Earlier, AmbiguousTime.Later })
+        foreach (var zone in new[] { "UTC", "America/New_York", "Europe/London" })
+        foreach (var period in new[] { "day", "week", "month" })
+        foreach (var agg in new[] { "mean", "sum", "min", "max", "count", "median", "last" })
+        {
+            data.Add(ambiguous, zone, period, agg);
+        }
+        return data;
+    }
 
-        var counting = new CountingSource(source);
+    [Theory]
+    [MemberData(nameof(WallClockCases))]
+    public async Task Wall_clock_data_pushes_down_with_the_same_dst_resolution_as_the_engine(
+        AmbiguousTime ambiguous, string zone, string period, string aggregator)
+    {
+        Assert.True(Aggregators.TryResolve(aggregator, out var agg));
+        var source = Source("legacy_ny", StoredTime.InZone("America/New_York", new LocalTimeResolution(ambiguous)));
+        var year = new DateInterval(Instant.FromUtc(new DateTime(2025, 1, 1, 7, 30, 0)), Instant.FromUtc(new DateTime(2025, 12, 31)));
+        await AssertParity(LegacyNyDef, source, Spec(LegacyNyDef, PeriodNamed(period), agg, GapPolicy.LeaveMissing, year), In(zone));
+    }
+
+    [Theory]
+    [InlineData(AmbiguousTime.Earlier)]
+    [InlineData(AmbiguousTime.Later)]
+    public async Task Wall_clock_pushdown_cuts_the_timeframe_at_the_exact_instant_inside_the_repeated_hour(AmbiguousTime ambiguous)
+    {
+        // Ends at 05:30 UTC on 2 Nov 2025: 01:30 on the first pass through New York's repeated hour.
+        var toMidRepeat = new DateInterval(Instant.FromUtc(new DateTime(2025, 10, 25)), Instant.FromUtc(new DateTime(2025, 11, 2, 5, 30, 0)));
+        var source = Source("legacy_ny", StoredTime.InZone("America/New_York", new LocalTimeResolution(ambiguous)));
+        await AssertParity(LegacyNyDef, source, Spec(LegacyNyDef, Period.Day, Aggregators.Count, GapPolicy.LeaveMissing, toMidRepeat), In("America/New_York"));
+    }
+
+    [Theory]
+    [InlineData("UTC")]
+    [InlineData("Europe/London")]
+    public async Task Season_rollups_fall_back_to_a_raw_fetch_and_stay_correct(string zone)
+    {
+        // Domain seasons have no SQL equivalent.
+        var wide = new DateInterval(Instant.FromUtc(new DateTime(2024, 1, 1)), Instant.FromUtc(new DateTime(2026, 1, 1)));
+        var spec = Spec(LoadDef, Period.Season, Aggregators.Mean, GapPolicy.LeaveMissing, wide);
+
+        var counting = new CountingSource(Source());
         var result = await MeridianRuntime.InMemory(Catalog, counting).Engine.RunAsync(spec, In(zone));
-        var expected = await MeridianRuntime.InMemory(Catalog, new RawOnly(source)).Engine.RunAsync(spec, In(zone));
+        var expected = await MeridianRuntime.InMemory(Catalog, new RawOnly(Source())).Engine.RunAsync(spec, In(zone));
 
         Assert.Equal(0, counting.Rollups);
         Assert.Equal(1, counting.Raws);
         AssertSameView(expected, result);
+    }
+
+    [Theory]
+    [InlineData(AmbiguousTime.Reject, SkippedTime.ShiftForward)]
+    [InlineData(AmbiguousTime.Earlier, SkippedTime.Reject)]
+    public void Wall_clock_policies_that_reject_times_are_not_pushed_down(AmbiguousTime ambiguous, SkippedTime skipped)
+    {
+        // Rejecting a time is an error only the engine can raise, so SQL must not quietly bucket it.
+        var source = Source("legacy_ny", StoredTime.InZone("America/New_York", new LocalTimeResolution(ambiguous, skipped)));
+        Assert.False(source.CanRollup(LegacyNyDef, new SourceRollup(Period.Day, Aggregators.Mean, CalendarContext.Default)));
+    }
+
+    [Fact]
+    public async Task Decimal_values_and_integer_ids_are_read_on_both_paths()
+    {
+        var typed = new MetricDefinition(new MetricId("typed"), "Typed", new Unit("usd"), "sum", [Athlete], TimeGrain.Instant);
+        var catalog = new InMemoryMetricCatalog([typed]);
+        var spec = PipelineSpec.Create("test", typed.Id, [new EntityRef(Athlete, 1)], Timeframe,
+            new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete), Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing));
+
+        var viaSql = await MeridianRuntime.InMemory(catalog, Source("typed")).Engine.RunAsync(spec, ProjectionOptions.Default);
+        var inEngine = await MeridianRuntime.InMemory(catalog, new RawOnly(Source("typed"))).Engine.RunAsync(spec, ProjectionOptions.Default);
+
+        Assert.Equal(19.75, viaSql.Series[0].Marks[0].Value);
+        AssertSameView(inEngine, viaSql);
     }
 
     [Fact]

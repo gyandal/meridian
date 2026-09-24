@@ -7,6 +7,8 @@ using Meridian.Bench.Scale;
 //   dotnet run -c Release --project bench/Meridian.Bench.Scale -- generate --entities 2000 --metrics 5 --days 730 --per-day 24
 //   dotnet run -c Release --project bench/Meridian.Bench.Scale -- run --label my-laptop
 //   dotnet run -c Release --project bench/Meridian.Bench.Scale -- all --entities 200 --days 365   # both, small
+//   dotnet run -c Release --project bench/Meridian.Bench.Scale -- taxi-download --from 2025-07 --to 2026-06
+//   dotnet run -c Release --project bench/Meridian.Bench.Scale -- taxi-run --label my-machine        # real NYC data
 //
 // Rows = entities × metrics × days × per-day × (1 − gap%). Results land in bench/results/*.json, which the
 // dashboard (src/Meridian.Hosts.Http) charts under "Benchmarks".
@@ -14,16 +16,34 @@ using Meridian.Bench.Scale;
 if (args.Length == 0 || args[0] is "-h" or "--help")
 {
     Console.WriteLine("""
-        usage: <generate|run|all> [options]
+        usage: <generate|run|all|taxi-download|taxi-run> [options]
 
-        generate   --entities 1000  --metrics 5  --days 730  --per-day 24  --gap 2  --data data/bench
-        run        --data data/bench  --report-entities 25  --report-days 365  --iterations 5
-                   --warm-iterations 50  --label local  --out bench/results
+        generate       --entities 1000  --metrics 5  --days 730  --per-day 24  --gap 2  --data data/bench
+        run            --data data/bench  --report-entities 25  --report-days 365  --iterations 5
+                       --warm-iterations 50  --label local  --out bench/results
+        taxi-download  --from 2025-07  --to 2026-06  --data data/nyc-taxi   (~65 MB per month, NYC TLC)
+        taxi-run       --data data/nyc-taxi  --zones 10  --iterations 5  --warm-iterations 50  --label local
         """);
     return 0;
 }
 
 var opts = ParseOptions(args.Skip(1));
+
+if (args[0] is "taxi-download" or "taxi-run")
+{
+    string taxiDir = Str("data", "data/nyc-taxi");
+    if (args[0] == "taxi-download")
+    {
+        await Taxi.DownloadAsync(taxiDir, Str("from", "2025-07"), Str("to", "2026-06"));
+    }
+    else
+    {
+        var taxiRun = await Taxi.RunAsync(taxiDir, Int("zones", 10), Int("iterations", 5), Int("warm-iterations", 50), Str("label", "local"));
+        Taxi.Save(taxiRun, Str("out", "bench/results"));
+    }
+    return 0;
+}
+
 string dataDir = Str("data", "data/bench");
 
 if (args[0] is "generate" or "all")

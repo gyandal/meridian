@@ -28,7 +28,7 @@ src/
   Meridian.Sources.DuckDb/ IRollupPointSource over DuckDB tables or Parquet files, resample pushed into SQL
   Meridian.Semantics/   MetricDefinition / IMetricCatalog shape sketch
 tests/                  Core (15) + Time (24) + Transforms (12) + Caching (17) + Views (14) + Engine (5) + Hosts (11)
-                        + DuckDb source (358: pushdown-vs-engine parity for every period × aggregator × gap × 4 zones)
+                        + DuckDb source (489: pushdown-vs-engine parity across zones, DST and wall-clock data)
 bench/
   Meridian.Benchmarks/  BenchmarkDotNet hot-path suite ([MemoryDiagnoser])
   Meridian.Bench.Scale/ generate millions–billions of rows as Parquet, time cold/warm/pushdown → bench/results/*.json
@@ -40,7 +40,7 @@ samples/
   dashboard-snapshot.html   a rendered ChartView gallery (static, shareable)
 ```
 
-`dotnet test` → 456 passing. Targets **net10.0**, nullable + warnings-as-errors.
+`dotnet test` → 587 passing. Targets **net10.0**, nullable + warnings-as-errors.
 Run the dashboard: `dotnet run --project src/Meridian.Hosts.Http` → http://localhost:5731.
 Time a source: `dotnet run -c Release --project samples/Meridian.Bench.Source` (add `-- --mysql "<conn>" <metric> 1,2,3` for a real DB).
 
@@ -164,12 +164,34 @@ store's fixed per-query cost (opening Parquet metadata), not by row volume. "Col
 is empty; the OS file cache is warm, as on a live server. Full results, including p95, are in
 `bench/results/` and charted in the dashboard's **Benchmarks** section.
 
+### Real data: NYC taxi trips
+
+The same harness over **47.5M real trips** — NYC TLC yellow-taxi records, Jul 2025 → Jun 2026, 775 MB of
+public Parquet read in place. Pickup times are New York wall-clock times with no zone, so the source is
+declared `StoredTime.InZone("America/New_York")` and weeks are New York weeks, across both DST changes.
+Report: weekly trips for the 10 busiest pickup zones (15.9M trips in scope).
+
+| Scenario | Median | |
+|---|---:|---|
+| Hand-written SQL | 747 ms | `date_trunc('week')` on the logged wall clock |
+| Cold · raw fetch | 10.8 s | every trip into Meridian, converted from New York time, then bucketed |
+| **Cold · pushdown** | **796 ms** | DST-correct conversion and bucketing inside DuckDB — within ~7% of hand-written SQL |
+| **Warm · cached** | **0.55 ms** | |
+| Warm · +1 zone | 298 ms | the files aren't sorted by zone, so one zone still scans them all |
+| Cold · 28-day rolling mean | 911 ms | New York days pushed down, rolling window in the engine |
+
+Before timing, the harness checks that the pushed-down result equals the in-engine one on this data
+(it does, DST weeks included). The "+1 zone" row is a useful contrast with the synthetic data: there,
+entity-sorted Parquet made adding an entity ~33 ms; here the store's layout decides. Reproduce with
+`taxi-download` and `taxi-run` (see `BUILD.md`).
+
 **Pushdown** (`IRollupPointSource`): when a report starts with a resample the source can compute exactly
-(DuckDB: day / week from any start day / month buckets, in any IANA zone, with mean, sum, min, max, count,
-median or last), the engine asks for one point per entity-bucket instead of every raw row. Anything
-else — seasons, wall-clock-in-zone columns, custom aggregators — falls back to a raw fetch, so results
-never change; parity tests check every period × aggregator × gap policy in four zones across real DST
-changes.
+(DuckDB: day / week from any start day / month buckets, in any IANA zone, for UTC, wall-clock-in-a-zone
+or date columns, with mean, sum, min, max, count, median or last), the engine asks for one point per
+entity-bucket instead of every raw row. Zone conversions in the SQL are generated from NodaTime's rules,
+so they can't disagree with the engine. Anything else — seasons, custom aggregators — falls back to a raw
+fetch, so results never change; parity tests check every period × aggregator × gap policy in several
+zones across real DST changes.
 
 ## Time
 

@@ -174,7 +174,7 @@ internal sealed class RollingTransform(TimeSpan window, IAggregator aggregator) 
         foreach (var key in order)
         {
             var indices = byKey[key];
-            indices.Sort((a, b) => input.AtTicks[a].CompareTo(input.AtTicks[b]));
+            indices.Sort((a, b) => input.AtTicks[a] != input.AtTicks[b] ? input.AtTicks[a].CompareTo(input.AtTicks[b]) : a.CompareTo(b));
 
             int left = 0;
             for (int p = 0; p < indices.Count; p++)

@@ -70,7 +70,7 @@ public static class Resampler
 
         foreach (var (key, indices) in byKey)
         {
-            indices.Sort((a, b) => at[a].CompareTo(at[b]));
+            indices.Sort((a, b) => at[a] != at[b] ? at[a].CompareTo(at[b]) : a.CompareTo(b)); // stable: ties keep source order
 
             // bucket-start-ticks -> present values, in ascending time order
             var buckets = new List<(long Start, List<double> Values)>();

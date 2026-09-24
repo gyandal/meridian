@@ -10,7 +10,7 @@
 
 ```bash
 dotnet build   -c Release        # build all libraries, hosts, samples and benchmarks
-dotnet test    -c Debug          # run all 456 tests across 8 projects
+dotnet test    -c Debug          # run all 587 tests across 8 projects
 ```
 
 ## The dashboard (start here)
@@ -63,6 +63,13 @@ dotnet run -c Release --project bench/Meridian.Bench.Scale -- all --entities 200
 
 ~172M rows is ~0.6 GB of Parquet and ~2 minutes to generate on a 6-core desktop; ~1B rows is a few GB.
 `data/` is git-ignored.
+
+Real data — NYC TLC yellow-taxi trips (public Parquet, ~65 MB per month):
+
+```bash
+dotnet run -c Release --project bench/Meridian.Bench.Scale -- taxi-download --from 2025-07 --to 2026-06
+dotnet run -c Release --project bench/Meridian.Bench.Scale -- taxi-run --label my-machine
+```
 
 ## Micro-benchmarks (BenchmarkDotNet)
 

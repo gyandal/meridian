@@ -42,6 +42,12 @@ public abstract record StoredTime
 
     public virtual bool NeedsExactFilter => false;
 
+    /// <summary>For <see cref="InZone"/>: the zone the wall-clock values are in; null otherwise.</summary>
+    public virtual DateTimeZone? Zone => null;
+
+    /// <summary>For <see cref="InZone"/>: how DST-ambiguous and skipped times resolve; null otherwise.</summary>
+    public virtual LocalTimeResolution? Resolution => null;
+
     private sealed record UtcStored : StoredTime
     {
         public override TimeKind Kind => TimeKind.Instant;
@@ -58,17 +64,19 @@ public abstract record StoredTime
             (new DateTime(t.Start.UtcTicks, DateTimeKind.Unspecified), new DateTime(t.End.UtcTicks, DateTimeKind.Unspecified));
     }
 
-    private sealed record ZonedStored(DateTimeZone Zone, LocalTimeResolution Resolution) : StoredTime
+    private sealed record ZonedStored(DateTimeZone WallZone, LocalTimeResolution WallResolution) : StoredTime
     {
         public override TimeKind Kind => TimeKind.Instant;
         public override bool NeedsExactFilter => true;
-        public override long ToTicks(DateTime stored) => TimeZones.ToUtcTicks(stored.Ticks, Zone, Resolution);
+        public override DateTimeZone? Zone => WallZone;
+        public override LocalTimeResolution? Resolution => WallResolution;
+        public override long ToTicks(DateTime stored) => TimeZones.ToUtcTicks(stored.Ticks, WallZone, WallResolution);
 
         // No zone is more than 14 hours from UTC, so a day either side always covers the timeframe.
         public override (DateTime, DateTime) StoredRange(DateInterval t) =>
             (new DateTime(Math.Max(DateTime.MinValue.Ticks, t.Start.UtcTicks - TimeSpan.TicksPerDay), DateTimeKind.Unspecified),
              new DateTime(Math.Min(DateTime.MaxValue.Ticks, t.End.UtcTicks + TimeSpan.TicksPerDay), DateTimeKind.Unspecified));
 
-        public override string ToString() => $"InZone({Zone.Id}, {Resolution.Ambiguous}, {Resolution.Skipped})";
+        public override string ToString() => $"InZone({WallZone.Id}, {WallResolution.Ambiguous}, {WallResolution.Skipped})";
     }
 }

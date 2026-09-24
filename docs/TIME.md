@@ -87,13 +87,28 @@ for `Local` data (use midnight boundaries for date-valued metrics).
 ## Pushdown
 
 A source that can bucket in SQL (`IRollupPointSource`) must produce exactly what the engine would. The
-DuckDB source pushes down day / week (any start day) / month buckets for `Utc` data in any zone —
-converting in SQL with DuckDB's time-zone support — and for `Local` data directly. `InZone` data and
-season buckets fall back to the engine. Parity tests run every period × aggregator × gap policy in
-several zones across real DST transitions.
+DuckDB source pushes down day / week (any start day) / month buckets in any report zone, for `Utc`,
+`InZone` and `Local` data.
+
+Zone conversions in that SQL are **generated from NodaTime's rules**, not delegated to the database: over
+a report's timeframe a zone has only a few offset changes, so each conversion is a short `CASE` over
+literal cut-offs, with the source's DST policy built in. Two reasons:
+
+- Databases pick their own occurrence for a repeated wall-clock time (DuckDB picks the later one; our
+  default is the earlier), and their tz data can lag NodaTime's. Generated SQL can't disagree.
+- It needs no time-zone support in the database at all.
+
+Where it is provably exact, the SQL skips conversions: a timeframe boundary that isn't within hours of a
+DST change is compared on the stored wall clock (so Parquet row groups can be pruned), and wall-clock data
+bucketed in its own zone is bucketed as stored. On the NYC taxi data this brings DST-correct pushdown to
+within ~7% of a naive `date_trunc` query.
+
+Policies that `Reject` times, and season buckets, fall back to the engine. Parity tests run every
+period × aggregator × gap policy in several zones across real DST changes, including wall-clock data
+with the repeated autumn hour logged twice and a timeframe that ends inside it.
 
 ## Not yet supported
 
 - **Per-event local day** (instant + the offset where it happened). Needs an offset column on
   `PointBlock` and an option on the calendar to bucket by it. The model leaves room for it.
-- Pushdown of `InZone` data and of seasons.
+- Pushdown of season buckets.

@@ -27,7 +27,7 @@ public static class Runner
     public static async Task<BenchRun> RunAsync(RunOptions o)
     {
         var manifest = Generator.ReadManifest(o.DataDir);
-        var spec = manifest.Spec;
+        var spec = manifest.Spec ?? throw new InvalidOperationException($"{o.DataDir} is not a synthetic dataset.");
         var relation = Generator.Relation(o.DataDir);
         var sourceOptions = new DuckDbSourceOptions("Data Source=:memory:", relation);
 
@@ -117,7 +117,7 @@ public static class Runner
             Scenarios: results);
     }
 
-    private static async Task<int> Run(MeridianRuntime runtime, PipelineSpec spec, ProjectionOptions? options = null)
+    internal static async Task<int> Run(MeridianRuntime runtime, PipelineSpec spec, ProjectionOptions? options = null)
     {
         var view = await runtime.Engine.RunAsync(spec, options ?? ProjectionOptions.Default);
         return view.Series.Sum(s => s.Marks.Count);
@@ -140,10 +140,10 @@ public static class Runner
         return rows.Count;
     }
 
-    private static async Task<ScenarioResult> Measure(string id, string name, string description, int iterations, Func<Task<int>> body)
+    internal static async Task<ScenarioResult> Measure(string id, string name, string description, int iterations, Func<Task<int>> body, bool warmUp = true)
     {
         iterations = Math.Max(1, iterations);
-        int points = await body(); // warm-up: JIT, OS file cache, DuckDB extension load — not timed
+        int points = warmUp ? await body() : 0; // warm-up: JIT, OS file cache, DuckDB extension load — not timed
         var times = new double[iterations];
         for (int i = 0; i < iterations; i++)
         {
@@ -173,10 +173,10 @@ public static class Runner
         return [.. Enumerable.Range(0, count).Select(k => (long)Math.Floor(k * step) + 1).Distinct()];
     }
 
-    private static string Sql(Instant instant) => instant.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+    internal static string Sql(Instant instant) => instant.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 
     /// <summary>Hides the rollup capability so the engine does the resample itself.</summary>
-    private sealed class RawOnlySource(IPointSource inner) : IPointSource
+    internal sealed class RawOnlySource(IPointSource inner) : IPointSource
     {
         public Task<PointBlock> FetchAsync(MetricDefinition metric, IReadOnlyList<EntityRef> entities, DateInterval timeframe, CancellationToken ct = default) =>
             inner.FetchAsync(metric, entities, timeframe, ct);

@@ -31,10 +31,11 @@ public sealed record DuckDbSourceOptions(
 /// An <see cref="IRollupPointSource"/> over DuckDB. Raw fetches stream rows for the requested entities;
 /// rollups push the calendar bucketing into SQL so only one row per (entity, bucket) leaves the database.
 ///
-/// Pushdown covers day, week (any start day) and month buckets with the built-in aggregators, for UTC data
-/// in any zone (converted with DuckDB's time-zone support) and for local data as given. Wall-clock data in
-/// a zone (<see cref="StoredTime.InZone"/>) and season buckets fall back to a raw fetch, so a pushed-down
-/// result always equals the in-engine one.
+/// Pushdown covers day, week (any start day) and month buckets with the built-in aggregators, in any
+/// report zone, for UTC data, wall-clock data in a zone (<see cref="StoredTime.InZone"/>, unless its DST
+/// policy rejects times) and local data as given. Zone conversions are generated from NodaTime's rules
+/// (<see cref="ZoneSql"/>), so a pushed-down result always equals the in-engine one; seasons fall back
+/// to a raw fetch.
 /// </summary>
 public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId entityDimension) : IRollupPointSource
 {
@@ -57,14 +58,20 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
     {
         var o = options;
         var sql =
-            $"SELECT {o.EntityColumn}, {o.ValueColumn}, {o.TimestampColumn} FROM {o.Relation} " +
+            // Values may be DECIMAL or INTEGER in real schemas (fares, counts): DuckDB casts, we read doubles.
+            $"SELECT {o.EntityColumn}, CAST({o.ValueColumn} AS DOUBLE), {o.TimestampColumn} FROM {o.Relation} " +
             Where(entities) +
             $" ORDER BY {o.EntityColumn}, {o.TimestampColumn}";
         return QueryAsync(sql, metric, timeframe, entities, o.Time.Axis, raw: true, ct);
     }
 
-    public bool CanRollup(MetricDefinition metric, SourceRollup rollup) =>
-        BucketExpression(rollup) is not null && SqlAggregates.ContainsKey(rollup.Aggregator);
+    public bool CanRollup(MetricDefinition metric, SourceRollup rollup)
+    {
+        var time = options.Time;
+        bool wallClockConvertible = time.Zone is null
+            || (time.Resolution!.Ambiguous != AmbiguousTime.Reject && time.Resolution.Skipped != SkippedTime.Reject);
+        return wallClockConvertible && Truncate(rollup, "x") is not null && SqlAggregates.ContainsKey(rollup.Aggregator);
+    }
 
     public Task<PointBlock> FetchRollupAsync(
         MetricDefinition metric,
@@ -73,46 +80,60 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         SourceRollup rollup,
         CancellationToken ct = default)
     {
-        var bucket = BucketExpression(rollup)
-            ?? throw new NotSupportedException($"Cannot push down a '{rollup.Period.Name}' rollup of {options.Time} data.");
-        if (!SqlAggregates.TryGetValue(rollup.Aggregator, out var template))
+        if (!CanRollup(metric, rollup))
         {
-            throw new NotSupportedException($"Cannot push down aggregator '{rollup.Aggregator.Name}'.");
+            throw new NotSupportedException($"Cannot push down a '{rollup.Period.Name}' / '{rollup.Aggregator.Name}' rollup of {options.Time} data.");
         }
 
         var o = options;
-        var aggregate = template.Replace("{v}", o.ValueColumn).Replace("{t}", o.TimestampColumn);
+        var time = o.Time;
+        var ts = o.TimestampColumn;
+
+        // Every row's moment in UTC (instants) — converted from wall clock in SQL when the column is InZone —
+        // then its wall clock in the report's zone. Local data is bucketed exactly as stored.
+        string? utc = time.Kind == TimeKind.Local ? null
+            : time.Zone is { } storedZone ? ZoneSql.WallToUtc(ts, storedZone, time.Resolution!, timeframe)
+            : ts;
+        string local = utc is null ? ts
+            // Same zone in and out: the round trip is the identity for bucketing, so skip it (see ZoneSql).
+            : time.Zone is { } z && z.Id == rollup.Calendar.Zone.Id && ZoneSql.RoundTripKeepsDays(z, timeframe) ? ts
+            : TimeZones.IsUtc(rollup.Calendar.Zone) ? utc
+            : ZoneSql.UtcToWall(utc, rollup.Calendar.Zone, timeframe);
+
+        var bucket = Truncate(rollup, local)!;
+        var aggregate = SqlAggregates[rollup.Aggregator].Replace("{v}", o.ValueColumn).Replace("{t}", utc ?? ts);
+
+        // InZone rows were pre-filtered on a widened wall-clock range; keep exactly the timeframe's instants —
+        // on the stored column when that is provably equivalent (it prunes Parquet row groups and avoids
+        // converting every row), otherwise on the converted instants.
+        string exact = "";
+        (DateTime Start, DateTime End)? wallRange = null;
+        if (time.NeedsExactFilter)
+        {
+            wallRange = ZoneSql.WallRange(time.Zone!, timeframe);
+            exact = wallRange is null
+                ? $" AND {utc} >= $utcStart AND {utc} < $utcEnd"
+                : $" AND {ts} >= $wallStart AND {ts} < $wallEnd";
+        }
+
         // A bucket whose values are all NULL must come back as missing (not 0 or dropped) to match the engine.
         var sql =
             $"SELECT {o.EntityColumn}, " +
             $"CASE WHEN count({o.ValueColumn}) = 0 THEN NULL ELSE CAST({aggregate} AS DOUBLE) END, " +
             $"CAST({bucket} AS TIMESTAMP) AS bucket " +
             $"FROM {o.Relation} " +
-            Where(entities) +
+            Where(entities) + exact +
             $" GROUP BY 1, 3 ORDER BY 1, 3";
 
         // Buckets are local (docs/TIME.md): tagged with the grain, and with the zone that drew the boundaries.
-        var zone = o.Time.Kind == TimeKind.Instant ? rollup.Calendar.Zone.Id : null;
-        return QueryAsync(sql, metric, timeframe, entities, TimeAxis.Local(rollup.Period.Name, zone), raw: false, ct);
+        var zone = time.Kind == TimeKind.Instant ? rollup.Calendar.Zone.Id : null;
+        return QueryAsync(sql, metric, timeframe, entities, TimeAxis.Local(rollup.Period.Name, zone), raw: false, ct, wallRange);
     }
 
-    /// <summary>SQL for the local start of each row's bucket, or null if it can't be computed exactly.</summary>
-    private string? BucketExpression(SourceRollup rollup)
+    /// <summary>SQL for the start of the bucket containing the wall-clock expression, or null for periods
+    /// with no SQL equivalent (domain seasons).</summary>
+    private static string? Truncate(SourceRollup rollup, string local)
     {
-        var o = options;
-        if (o.Time.NeedsExactFilter) return null; // wall-clock-in-zone data: DST resolution stays in the engine
-
-        string local;
-        if (o.Time.Kind == TimeKind.Local || TimeZones.IsUtc(rollup.Calendar.Zone))
-        {
-            local = o.TimestampColumn;
-        }
-        else
-        {
-            // UTC timestamp → that moment's wall clock in the report's zone (DuckDB ICU time zones).
-            local = $"timezone('{rollup.Calendar.Zone.Id.Replace("'", "''")}', {o.TimestampColumn} AT TIME ZONE 'UTC')";
-        }
-
         if (ReferenceEquals(rollup.Period, Period.Day)) return $"date_trunc('day', {local})";
         if (ReferenceEquals(rollup.Period, Period.Month)) return $"date_trunc('month', {local})";
         if (ReferenceEquals(rollup.Period, Period.Week))
@@ -123,7 +144,7 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
                 ? $"date_trunc('week', {local})"
                 : $"(date_trunc('week', {local} + INTERVAL {shift} DAY) - INTERVAL {shift} DAY)";
         }
-        return null; // seasons: domain calendars have no SQL equivalent here
+        return null;
     }
 
     private string Where(IReadOnlyList<EntityRef> entities)
@@ -141,7 +162,7 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
 
     private async Task<PointBlock> QueryAsync(
         string sql, MetricDefinition metric, DateInterval timeframe, IReadOnlyList<EntityRef> entities,
-        TimeAxis axis, bool raw, CancellationToken ct)
+        TimeAxis axis, bool raw, CancellationToken ct, (DateTime Start, DateTime End)? wallRange = null)
     {
         var builder = new PointBlock.Builder(metric.Unit, axis);
         if (entities.Count == 0) return builder.Build();
@@ -157,6 +178,16 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         cmd.Parameters.Add(new DuckDBParameter("metric", metric.Id.Value));
         cmd.Parameters.Add(new DuckDBParameter("start", start));
         cmd.Parameters.Add(new DuckDBParameter("end", end));
+        if (sql.Contains("$utcStart", StringComparison.Ordinal))
+        {
+            cmd.Parameters.Add(new DuckDBParameter("utcStart", timeframe.Start.UtcDateTime));
+            cmd.Parameters.Add(new DuckDBParameter("utcEnd", timeframe.End.UtcDateTime));
+        }
+        if (wallRange is { } wr)
+        {
+            cmd.Parameters.Add(new DuckDBParameter("wallStart", wr.Start));
+            cmd.Parameters.Add(new DuckDBParameter("wallEnd", wr.End));
+        }
 
         await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         PointKey key = default;

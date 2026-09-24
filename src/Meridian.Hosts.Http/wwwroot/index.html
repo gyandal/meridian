@@ -249,12 +249,13 @@ async function loadBenchmarks(){
 }
 function renderRun(i){
   const r=bench.runs[i], sc=r.scenarios, spec=r.dataset.spec;
+  const shape=spec?`${spec.metrics} metrics × ${spec.entities.toLocaleString()} entities × ${spec.days} days × ${spec.perDay}/day`:esc(r.dataset.description||r.dataset.name||"");
   const base=sc.find(s=>s.id==="cold-raw");
   const lo=Math.log10(Math.min(...sc.map(s=>s.medianMs))), hi=Math.log10(Math.max(...sc.map(s=>s.medianMs)));
   const w=v=>hi===lo?100:4+96*(Math.log10(v)-lo)/(hi-lo);
   $("#benchBody").innerHTML=`<div class="bmeta">
       <span>data <b>${big(r.dataset.rows)} rows</b> · ${(r.dataset.bytes/1048576).toFixed(0)} MB Parquet</span>
-      <span>shape <b>${spec.metrics} metrics × ${spec.entities.toLocaleString()} entities × ${spec.days} days × ${spec.perDay}/day</b></span>
+      <span>${spec?"shape":"dataset"} <b>${shape}</b></span>
       <span>report <b>${esc(r.report.transform)} · ${r.report.entities} entities · ${r.report.days} days · ${big(r.report.rawRowsInScope)} raw rows</b></span>
       <span>machine <b>${esc(r.machine.cpu)}</b> · ${r.machine.logicalCores} threads · ${esc(r.machine.os)}</span>
       <span>DuckDB <b>${esc(r.machine.duckDb)}</b></span></div>
