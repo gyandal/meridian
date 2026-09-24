@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <!-- BenchmarkDotNet requires an optimized (Release) build; warnings-as-errors kept from root props. -->
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Meridian.Core/Meridian.Core.csproj" />
+    <ProjectReference Include="../../src/Meridian.Time/Meridian.Time.csproj" />
+    <ProjectReference Include="../../src/Meridian.Transforms/Meridian.Transforms.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+  </ItemGroup>
+</Project>

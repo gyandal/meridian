@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />
+    <ProjectReference Include="../Meridian.Time/Meridian.Time.csproj" />
+    <ProjectReference Include="../Meridian.Transforms/Meridian.Transforms.csproj" />
+    <ProjectReference Include="../Meridian.Semantics/Meridian.Semantics.csproj" />
+    <ProjectReference Include="../Meridian.Views/Meridian.Views.csproj" />
+    <ProjectReference Include="../Meridian.Views.Json/Meridian.Views.Json.csproj" />
+    <ProjectReference Include="../Meridian.Engine/Meridian.Engine.csproj" />
+  </ItemGroup>
+</Project>

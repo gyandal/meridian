@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />
+    <ProjectReference Include="../Meridian.Caching/Meridian.Caching.csproj" />
+    <ProjectReference Include="../Meridian.Semantics/Meridian.Semantics.csproj" />
+    <ProjectReference Include="../Meridian.Engine/Meridian.Engine.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="MySqlConnector" Version="2.6.2" />
+  </ItemGroup>
+</Project>

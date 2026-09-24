@@ -1,0 +1,31 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- Package metadata. Release builds override Version from the git tag (see .github/workflows/release.yml). -->
+  <PropertyGroup>
+    <Version>0.1.0-dev</Version>
+    <Authors>Stephen Wood</Authors>
+    <Copyright>Copyright (c) 2026 Stephen Wood</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Description>Meridian — longitudinal datapoints → composable transforms → chart-agnostic views, with pluggable caching.</Description>
+    <PackageTags>analytics;reporting;time-series;longitudinal;metrics;semantic-layer</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" Condition="'$(IsPackable)' == 'true'" />
+  </ItemGroup>
+</Project>

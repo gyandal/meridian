@@ -1,0 +1,57 @@
+using System.Text.Json;
+using Meridian.Engine;
+using Meridian.Hosts.Http;
+using Meridian.Views;
+using Meridian.Views.Json;
+
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+var today = DateTime.UtcNow;
+var catalog = Seed.Catalog();
+var source = new SeededPointSource(Seed.Data(today), Seed.Player);
+var runtime = MeridianRuntime.InMemory(catalog, source);
+
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
+// Describe — everything the dashboard/an agent can choose.
+app.MapGet("/api/catalog", () => Results.Json(new
+{
+    metrics = catalog.Metrics.Select(m => new { id = m.Id.Value, name = m.Name, unit = m.Unit.Symbol, grain = m.NativeGrain.ToString(), dimensions = m.ValidDimensions.Select(d => d.Name) }),
+    entities = Seed.Players.Select(p => new { id = p, name = $"Player {p}" }),
+    transforms = new[] { "raw", "resample", "rolling7", "rolling28" },
+    periods = new[] { "day", "week", "month", "season" },
+    aggregators = new[] { "mean", "sum", "min", "max", "median", "last", "count" },
+    gaps = new[] { "leave-missing", "zero-fill", "carry-forward", "interpolate" },
+    chartKinds = new[] { "line", "column", "area" },
+}));
+
+// Query — the interactive builder path (cache-backed).
+app.MapPost("/api/report", async (ReportRequest request, CancellationToken ct) =>
+{
+    var spec = ReportRequestMapper.ToSpec(request, Seed.Player, Seed.Tenant, today);
+    var view = await runtime.Engine.RunAsync(spec, ProjectionOptions.Default, ct);
+    return Results.Text(ChartViewJson.Serialize(view), "application/json");
+});
+
+// Showcase — server-computed panels, one per feature.
+app.MapGet("/api/showcase", () =>
+{
+    var payload = Showcase.Build(source, today).Select(p => new
+    {
+        id = p.Id,
+        title = p.Title,
+        feature = p.Feature,
+        caption = p.Caption,
+        chartView = JsonSerializer.Deserialize<JsonElement>(ChartViewJson.Serialize(p.View)),
+    });
+    return Results.Json(payload);
+});
+
+// Live cache stat — proves repeat runs don't re-hit the source.
+app.MapGet("/api/stats", () => Results.Json(new { entitySlicesFetched = source.EntitySlicesFetched }));
+
+app.Run();
+
+public partial class Program;

@@ -1,0 +1,32 @@
+<Solution>
+  <Folder Name="/bench/">
+    <Project Path="bench/Meridian.Benchmarks/Meridian.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Meridian.Bench.Source/Meridian.Bench.Source.csproj" />
+    <Project Path="samples/Meridian.Sample.Weather/Meridian.Sample.Weather.csproj" />
+    <Project Path="samples/Meridian.Sample/Meridian.Sample.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Meridian.Caching/Meridian.Caching.csproj" />
+    <Project Path="src/Meridian.Core/Meridian.Core.csproj" />
+    <Project Path="src/Meridian.Engine/Meridian.Engine.csproj" />
+    <Project Path="src/Meridian.Hosts.Http/Meridian.Hosts.Http.csproj" />
+    <Project Path="src/Meridian.Hosts.Mcp/Meridian.Hosts.Mcp.csproj" />
+    <Project Path="src/Meridian.Semantics/Meridian.Semantics.csproj" />
+    <Project Path="src/Meridian.Sources.MySql/Meridian.Sources.MySql.csproj" />
+    <Project Path="src/Meridian.Time/Meridian.Time.csproj" />
+    <Project Path="src/Meridian.Transforms/Meridian.Transforms.csproj" />
+    <Project Path="src/Meridian.Views.Json/Meridian.Views.Json.csproj" />
+    <Project Path="src/Meridian.Views/Meridian.Views.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Meridian.Caching.Tests/Meridian.Caching.Tests.csproj" />
+    <Project Path="tests/Meridian.Core.Tests/Meridian.Core.Tests.csproj" />
+    <Project Path="tests/Meridian.Engine.Tests/Meridian.Engine.Tests.csproj" />
+    <Project Path="tests/Meridian.Hosts.Tests/Meridian.Hosts.Tests.csproj" />
+    <Project Path="tests/Meridian.Time.Tests/Meridian.Time.Tests.csproj" />
+    <Project Path="tests/Meridian.Transforms.Tests/Meridian.Transforms.Tests.csproj" />
+    <Project Path="tests/Meridian.Views.Tests/Meridian.Views.Tests.csproj" />
+  </Folder>
+</Solution>
