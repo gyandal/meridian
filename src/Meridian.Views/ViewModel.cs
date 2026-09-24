@@ -57,7 +57,19 @@ public sealed record MarkView(
 
 public sealed record SeriesView(string Name, string ColorToken, IReadOnlyList<MarkView> Marks);
 
-public sealed record AxisView(AxisKind Kind, string Title, double? Min = null, double? Max = null, string? Unit = null);
+/// <summary>An axis. A temporal axis also says what its times are (docs/TIME.md): <see cref="TimeKind.Instant"/>
+/// values are UTC epoch-millis to display in <see cref="TimeZone"/>; <see cref="TimeKind.Local"/> values are
+/// calendar positions (e.g. week buckets) whose epoch-millis encode the wall clock — display them in UTC,
+/// never convert them. <see cref="TimeZone"/> on a local axis is the zone that drew the bucket boundaries.</summary>
+public sealed record AxisView(
+    AxisKind Kind,
+    string Title,
+    double? Min = null,
+    double? Max = null,
+    string? Unit = null,
+    TimeKind? Time = null,
+    string? TimeZone = null,
+    string? Grain = null);
 
 public sealed record LegendView(IReadOnlyList<string> Series);
 

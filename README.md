@@ -10,8 +10,8 @@ system that already sits on the data. See `PLAN.md` for the architecture.
 src/
   Meridian.Core/        Instant, DateInterval, typed keys (PointKey/KeyPart), Measurement,
                         PointBlock (columnar), Aggregators, StableHash (deterministic cache keys)
-  Meridian.Time/        CalendarContext, seasons, tumbling Periods (Day/Week/Month/Season),
-                        GapPolicy, and Resampler — the core primitive
+  Meridian.Time/        CalendarContext (IANA zones via NodaTime), seasons, tumbling Periods, GapPolicy,
+                        Resampler (instants → local calendar buckets), StoredTime + DST resolution
   Meridian.Transforms/  ITransform + Pipeline; Filter/Map/Rekey/Reduce/PerGroup/Resample/Rolling;
                         Binary.Combine + Compare (the two-input joins)
   Meridian.Caching/     IPointCacheStore + IKeyValueStore backend contract; InMemory store;
@@ -27,8 +27,8 @@ src/
   Meridian.Sources.MySql/  a real IPointSource over a MySQL datapoints table (MySqlConnector)
   Meridian.Sources.DuckDb/ IRollupPointSource over DuckDB tables or Parquet files, resample pushed into SQL
   Meridian.Semantics/   MetricDefinition / IMetricCatalog shape sketch
-tests/                  Core (15) + Time (15) + Transforms (8) + Caching (17) + Views (8) + Engine (5) + Hosts (9)
-                        + DuckDb source (89, incl. pushdown-vs-engine parity for every period × aggregator × gap)
+tests/                  Core (15) + Time (24) + Transforms (12) + Caching (17) + Views (14) + Engine (5) + Hosts (11)
+                        + DuckDb source (358: pushdown-vs-engine parity for every period × aggregator × gap × 4 zones)
 bench/
   Meridian.Benchmarks/  BenchmarkDotNet hot-path suite ([MemoryDiagnoser])
   Meridian.Bench.Scale/ generate millions–billions of rows as Parquet, time cold/warm/pushdown → bench/results/*.json
@@ -40,7 +40,7 @@ samples/
   dashboard-snapshot.html   a rendered ChartView gallery (static, shareable)
 ```
 
-`dotnet test` → 166 passing. Targets **net10.0**, nullable + warnings-as-errors.
+`dotnet test` → 456 passing. Targets **net10.0**, nullable + warnings-as-errors.
 Run the dashboard: `dotnet run --project src/Meridian.Hosts.Http` → http://localhost:5731.
 Time a source: `dotnet run -c Release --project samples/Meridian.Bench.Source` (add `-- --mysql "<conn>" <metric> 1,2,3` for a real DB).
 
@@ -150,6 +150,7 @@ of one metric for 25 entities over a year — through every path. Measured on an
 | Hand-written SQL | 88 ms | 93 ms | the floor: one DuckDB `GROUP BY`, results read into memory |
 | Cold · raw fetch | 295 ms | 313 ms | empty cache, every raw row moved into Meridian and resampled there |
 | **Cold · pushdown** | **97 ms** | **94 ms** | empty cache, resample pushed into SQL — level with hand-written SQL |
+| Cold · pushdown, London weeks | 102 ms | — | as above, weeks drawn in Europe/London: the zone conversion runs inside DuckDB |
 | **Warm · cached** | **0.72 ms** | **0.59 ms** | repeat report, source untouched — 120–150× faster than querying the store |
 | Warm · +1 entity | 33 ms | 35 ms | only the new entity is fetched; the rest merge from cache |
 | Warm · 1 entity changed | 31 ms | 33 ms | a write invalidates one entity; only its slice is refetched |
@@ -164,10 +165,19 @@ is empty; the OS file cache is warm, as on a live server. Full results, includin
 `bench/results/` and charted in the dashboard's **Benchmarks** section.
 
 **Pushdown** (`IRollupPointSource`): when a report starts with a resample the source can compute exactly
-(DuckDB: UTC day / Monday-week / month buckets with mean, sum, min, max, count, median or last), the
-engine asks for one point per entity-bucket instead of every raw row. Anything else — local-time
-buckets, seasons, custom aggregators — falls back to a raw fetch, so results never change; a parity test
-checks every period × aggregator × gap policy against the in-engine resample.
+(DuckDB: day / week from any start day / month buckets, in any IANA zone, with mean, sum, min, max, count,
+median or last), the engine asks for one point per entity-bucket instead of every raw row. Anything
+else — seasons, wall-clock-in-zone columns, custom aggregators — falls back to a raw fetch, so results
+never change; parity tests check every period × aggregator × gap policy in four zones across real DST
+changes.
+
+## Time
+
+Instants are stored and moved as UTC; calendar values (a date of birth, a match day, a daily wellness
+answer) are kept exactly as given. Bucketing into days, weeks and months happens in the report's time
+zone and produces calendar buckets — so a London day holds exactly that London date's readings, across
+DST — and charts say which zone drew them. Sources declare how their timestamps are stored (UTC, wall
+clock in a zone with a DST policy, or local dates). The full model is in [`docs/TIME.md`](docs/TIME.md).
 
 ## What the design guarantees
 
@@ -185,9 +195,8 @@ checks every period × aggregator × gap policy against the in-engine resample.
 
 - The columnar/SIMD hot path — `PointBlock` exposes the SoA layout but `Resampler` still groups via
   dictionaries. This is where the benchmark-driven perf pass lands (Phase 1).
-- Rolling (overlapping) windows — a Transform, not a Period; belongs in `Meridian.Transforms`.
-- Ambiguous-time (fall-back) resolution is simplistic; midnight boundaries don't hit it, but a
-  production `TimeZoneMath` needs an explicit ambiguity policy.
+- Bucketing by the local day where each event happened (instant + stored offset), for entities that
+  travel across zones — the time model leaves room for it (`docs/TIME.md`).
 - Quartiles/SD/percentage aggregators, and the full metric catalog (source binding, change→tag).
 
 ## License

@@ -27,7 +27,7 @@ public static class Binary
         bool matchTime,
         Unit? unit = null)
     {
-        var builder = new PointBlock.Builder(unit ?? left.Unit);
+        var builder = new PointBlock.Builder(unit ?? left.Unit, matchTime ? JoinedAxis(left, right) : left.Time);
 
         if (matchTime)
         {
@@ -69,6 +69,28 @@ public static class Binary
         }
 
         return builder.Build();
+    }
+
+    /// <summary>
+    /// Matching on time only makes sense within one kind of time (docs/TIME.md): an instant and a calendar
+    /// bucket are different things, and two bucketed series must share the zone that drew their boundaries.
+    /// </summary>
+    private static TimeAxis JoinedAxis(PointBlock left, PointBlock right)
+    {
+        if (left.Count == 0) return right.Time;
+        if (right.Count == 0) return left.Time;
+        if (left.Time.Kind != right.Time.Kind)
+        {
+            throw new InvalidOperationException(
+                $"Cannot match time between {left.Time} and {right.Time} data: an instant and a local (calendar) " +
+                "value are different kinds of time. Resample the instant series into calendar buckets first (see docs/TIME.md).");
+        }
+        if (left.Time.Zone is { } lz && right.Time.Zone is { } rz && lz != rz)
+        {
+            throw new InvalidOperationException(
+                $"Cannot match time between series bucketed in different time zones ({lz} vs {rz}); their days are different days.");
+        }
+        return left.Time with { Zone = left.Time.Zone ?? right.Time.Zone };
     }
 
     /// <summary>Compare a current block against a baseline, joined on key. Expects one value per key

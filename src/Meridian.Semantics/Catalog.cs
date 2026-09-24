@@ -24,13 +24,18 @@ public enum TimeGrain
 /// (charts, API, agent query, cache invalidation) fall out for free. This is only the shape sketch;
 /// source binding, calculated metrics, and the change→tag mapping are fleshed out in later phases.
 /// </summary>
+/// <remarks><see cref="TimeKind"/> declares what the metric's timestamps mean (docs/TIME.md): readings at
+/// a moment (<see cref="Core.TimeKind.Instant"/>, the default) or calendar dates with no zone, such as a
+/// daily wellness score or a match day (<see cref="Core.TimeKind.Local"/>). The engine rejects a source
+/// whose data contradicts it.</remarks>
 public sealed record MetricDefinition(
     MetricId Id,
     string Name,
     Unit Unit,
     string DefaultAggregation,               // resolves against Meridian.Core.Aggregators
     ImmutableArray<DimensionId> ValidDimensions,
-    TimeGrain NativeGrain);
+    TimeGrain NativeGrain,
+    TimeKind TimeKind = TimeKind.Instant);
 
 public interface IMetricCatalog
 {

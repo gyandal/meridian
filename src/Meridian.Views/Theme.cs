@@ -36,7 +36,9 @@ public interface ILabelResolver
 {
     string SeriesName(KeyPart seriesPart);
     string CategoryLabel(KeyPart categoryPart);
-    string TimeLabel(Instant at, CalendarContext calendar);
+    /// <summary>Label for a point's time. <paramref name="ticks"/> are UTC for instants (shown in the calendar's
+    /// zone) and wall-clock for local values (shown as-is, formatted by grain).</summary>
+    string TimeLabel(long ticks, TimeAxis time, CalendarContext calendar);
 }
 
 public sealed class DefaultLabelResolver : ILabelResolver
@@ -51,8 +53,25 @@ public sealed class DefaultLabelResolver : ILabelResolver
         ? categoryPart.Text
         : categoryPart.Numeric.ToString(CultureInfo.InvariantCulture);
 
-    public string TimeLabel(Instant at, CalendarContext calendar) =>
-        TimeZoneInfo.ConvertTimeFromUtc(at.UtcDateTime, calendar.Zone).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    public string TimeLabel(long ticks, TimeAxis time, CalendarContext calendar)
+    {
+        if (time.Kind == TimeKind.Instant)
+        {
+            return DateOrDateTime(new DateTime(TimeZones.ToLocalTicks(ticks, calendar.Zone)));
+        }
+
+        var local = new DateTime(ticks);
+        return time.Grain switch
+        {
+            "month" => local.ToString("yyyy-MM", CultureInfo.InvariantCulture),
+            "season" => calendar.Season.Label(new DateInterval(new Instant(ticks), new Instant(ticks)), calendar.Floating),
+            _ => DateOrDateTime(local),
+        };
+    }
+
+    private static string DateOrDateTime(DateTime local) => local.TimeOfDay == TimeSpan.Zero
+        ? local.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+        : local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
 }
 
 /// <summary>Culture-aware value formatting — culture lives here, never on the datum.</summary>

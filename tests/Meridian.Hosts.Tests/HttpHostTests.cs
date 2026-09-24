@@ -105,6 +105,38 @@ public class HttpHostTests(WebApplicationFactory<Program> factory) : IClassFixtu
     }
 
     [Fact]
+    public async Task Report_buckets_in_the_requested_time_zone_and_says_so()
+    {
+        var client = _factory.CreateClient();
+        var response = await client.PostAsJsonAsync("/api/report", new
+        {
+            metric = "training-load", entities = new[] { 1 }, pastDays = 60, transform = "resample", period = "week",
+            aggregator = "mean", gap = "leave-missing", chartKind = "line", seriesByEntity = true,
+            statusOn = false, statusLow = 0.0, statusHigh = 0.0, timeZone = "Australia/Sydney",
+        });
+        response.EnsureSuccessStatusCode();
+
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var axis = doc.RootElement.GetProperty("axes")[0];
+        Assert.Equal("Local", axis.GetProperty("time").GetString());
+        Assert.Equal("Australia/Sydney", axis.GetProperty("timeZone").GetString());
+        Assert.Equal("week", axis.GetProperty("grain").GetString());
+    }
+
+    [Fact]
+    public async Task Report_rejects_an_unknown_time_zone_with_400()
+    {
+        var client = _factory.CreateClient();
+        var response = await client.PostAsJsonAsync("/api/report", new
+        {
+            metric = "training-load", entities = new[] { 1 }, pastDays = 60, transform = "resample", period = "week",
+            aggregator = "mean", gap = "leave-missing", chartKind = "line", seriesByEntity = true,
+            statusOn = false, statusLow = 0.0, statusHigh = 0.0, timeZone = "Mars/Olympus_Mons",
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Benchmarks_serves_runs_newest_first_with_a_history_chart_per_dataset()
     {
         var dir = Directory.CreateTempSubdirectory("meridian-bench-").FullName;

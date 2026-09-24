@@ -37,7 +37,8 @@ public sealed class ReportEngine(
 
         var transforms = spec.Transforms;
         var signature = "source"; // caches the raw fetch; transforms run after the merge
-        PointLoader loader = (missing, token) => source.FetchAsync(metric, missing, spec.Timeframe, token);
+        PointLoader loader = async (missing, token) =>
+            CheckTimeKind(metric, await source.FetchAsync(metric, missing, spec.Timeframe, token).ConfigureAwait(false));
 
         // Pushdown: a leading resample the source can compute is done where the data lives.
         if (transforms.Length > 0 && transforms[0] is ResampleTransform resample && source is IRollupPointSource rollupSource)
@@ -73,5 +74,16 @@ public sealed class ReportEngine(
         // Default the value unit from the catalog if the view didn't pin one.
         var view = spec.View.ValueUnit is null ? spec.View with { ValueUnit = metric.Unit } : spec.View;
         return projector.Project(current, view, options);
+    }
+
+    private static PointBlock CheckTimeKind(MetricDefinition metric, PointBlock block)
+    {
+        if (block.Count > 0 && block.Time.Kind != metric.TimeKind)
+        {
+            throw new InvalidOperationException(
+                $"Metric '{metric.Id}' is declared as {metric.TimeKind} time but its source returned {block.Time.Kind} " +
+                "timestamps. Declare the metric's TimeKind to match, or configure the source's StoredTime (docs/TIME.md).");
+        }
+        return block;
     }
 }

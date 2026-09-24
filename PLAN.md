@@ -175,10 +175,11 @@ public interface IPeriod
 }   // Day, Week(weekStart), Month, Quarter, Season(domainCalendar), Rolling(window, step)
 
 public enum GapPolicy { LeaveMissing, ZeroFill, CarryForward, Interpolate }
-public sealed record CalendarContext(TimeZoneInfo Zone, WeekStart WeekStart, ISeasonCalendar Season);
+public sealed record CalendarContext(DateTimeZone Zone, DayOfWeek WeekStart, ISeasonCalendar Season); // NodaTime zone
 ```
 
-- **UTC internal; timezone applied only at bucketing/presentation.**
+- **UTC internal; timezone applied at bucketing.** Buckets are local calendar positions, and calendar
+  values (dates of birth, match days) are never converted. The full model is in `docs/TIME.md`.
 - **`Resample(period, aggregator, gapPolicy)`** is the core primitive — replaces string-round-trip
   aggregation, ad-hoc spreading/gap-skipping, and month-name grouping. Points positioned at bucket
   start/interval, labelled only at render.

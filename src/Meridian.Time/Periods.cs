@@ -17,10 +17,10 @@ internal sealed class DayPeriod : IPeriod
 
     public DateInterval BucketFor(Instant instant, CalendarContext ctx)
     {
-        var day = TimeZoneMath.ToLocal(instant, ctx.Zone).Date;
+        var day = TimeZones.ToLocal(instant, ctx.Zone).Date;
         return new DateInterval(
-            TimeZoneMath.ToInstant(day, ctx.Zone),
-            TimeZoneMath.ToInstant(day.AddDays(1), ctx.Zone));
+            TimeZones.ToInstant(day, ctx.Zone),
+            TimeZones.ToInstant(day.AddDays(1), ctx.Zone));
     }
 
     public IEnumerable<DateInterval> Buckets(DateInterval range, CalendarContext ctx) =>
@@ -33,12 +33,12 @@ internal sealed class WeekPeriod : IPeriod
 
     public DateInterval BucketFor(Instant instant, CalendarContext ctx)
     {
-        var date = TimeZoneMath.ToLocal(instant, ctx.Zone).Date;
+        var date = TimeZones.ToLocal(instant, ctx.Zone).Date;
         int offset = ((int)date.DayOfWeek - (int)ctx.WeekStart + 7) % 7;
         var start = date.AddDays(-offset);
         return new DateInterval(
-            TimeZoneMath.ToInstant(start, ctx.Zone),
-            TimeZoneMath.ToInstant(start.AddDays(7), ctx.Zone));
+            TimeZones.ToInstant(start, ctx.Zone),
+            TimeZones.ToInstant(start.AddDays(7), ctx.Zone));
     }
 
     public IEnumerable<DateInterval> Buckets(DateInterval range, CalendarContext ctx) =>
@@ -51,11 +51,11 @@ internal sealed class MonthPeriod : IPeriod
 
     public DateInterval BucketFor(Instant instant, CalendarContext ctx)
     {
-        var date = TimeZoneMath.ToLocal(instant, ctx.Zone).Date;
+        var date = TimeZones.ToLocal(instant, ctx.Zone).Date;
         var start = new DateTime(date.Year, date.Month, 1);
         return new DateInterval(
-            TimeZoneMath.ToInstant(start, ctx.Zone),
-            TimeZoneMath.ToInstant(start.AddMonths(1), ctx.Zone));
+            TimeZones.ToInstant(start, ctx.Zone),
+            TimeZones.ToInstant(start.AddMonths(1), ctx.Zone));
     }
 
     public IEnumerable<DateInterval> Buckets(DateInterval range, CalendarContext ctx) =>

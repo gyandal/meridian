@@ -5,4 +5,8 @@
   <ItemGroup>
     <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Bundled IANA tz database: identical zone rules on every OS, no ICU/globalization dependency. -->
+    <PackageReference Include="NodaTime" Version="3.3.4" />
+  </ItemGroup>
 </Project>

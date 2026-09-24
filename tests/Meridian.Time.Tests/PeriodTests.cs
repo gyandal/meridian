@@ -6,7 +6,7 @@ namespace Meridian.Time.Tests;
 
 public class PeriodTests
 {
-    private static readonly TimeZoneInfo London = TimeZoneInfo.FindSystemTimeZoneById("Europe/London");
+    private static readonly CalendarContext LondonCalendar = CalendarContext.For("Europe/London");
 
     private static Instant Utc(int y, int m, int d, int h = 12) =>
         Instant.FromUtc(new DateTime(y, m, d, h, 0, 0, DateTimeKind.Utc));
@@ -15,7 +15,7 @@ public class PeriodTests
     public void Day_across_spring_forward_is_23_hours()
     {
         // London clocks jump forward 01:00→02:00 on 2026-03-29.
-        var ctx = new CalendarContext(London, DayOfWeek.Monday, new FixedSeasonCalendar());
+        var ctx = LondonCalendar;
         var bucket = Period.Day.BucketFor(Utc(2026, 3, 29), ctx);
 
         Assert.Equal(TimeSpan.FromHours(23).Ticks, bucket.TicksDuration);
@@ -25,7 +25,7 @@ public class PeriodTests
     public void Day_across_fall_back_is_25_hours()
     {
         // London clocks fall back 02:00→01:00 on 2026-10-25.
-        var ctx = new CalendarContext(London, DayOfWeek.Monday, new FixedSeasonCalendar());
+        var ctx = LondonCalendar;
         var bucket = Period.Day.BucketFor(Utc(2026, 10, 25), ctx);
 
         Assert.Equal(TimeSpan.FromHours(25).Ticks, bucket.TicksDuration);
@@ -44,7 +44,7 @@ public class PeriodTests
     [InlineData(DayOfWeek.Sunday)]
     public void Week_bucket_starts_on_the_configured_day_and_lasts_seven_days(DayOfWeek weekStart)
     {
-        var ctx = new CalendarContext(TimeZoneInfo.Utc, weekStart, new FixedSeasonCalendar());
+        var ctx = CalendarContext.Default with { WeekStart = weekStart };
         var i = Utc(2026, 8, 12); // some Wednesday-ish midweek instant
         var bucket = Period.Week.BucketFor(i, ctx);
 

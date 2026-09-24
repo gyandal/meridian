@@ -44,8 +44,7 @@ public sealed class PointCache(IPointCacheStore store, IDataVersionStore version
             : await LoadMissesCoalesced(scope, misses, loader, ct).ConfigureAwait(false);
 
         // Merge, preserving the requested entity order.
-        var unit = FirstUnit(hits, loaded);
-        var merged = new PointBlock.Builder(unit);
+        var merged = Template(hits, loaded);
         foreach (var entity in entities)
         {
             var slice = hits.TryGetValue(entity.Id, out var h) ? h
@@ -88,7 +87,7 @@ public sealed class PointCache(IPointCacheStore store, IDataVersionStore version
         {
             // Store a slice for every requested miss — an empty one caches the "no data" result so we
             // don't re-hit the source for a genuinely empty entity.
-            var slice = byEntity.TryGetValue(entity.Id, out var s) ? s : PointBlock.Empty(block.Unit);
+            var slice = byEntity.TryGetValue(entity.Id, out var s) ? s : PointBlock.Empty(block.Unit, block.Time);
             long version = versions.Current(new ChangeScope(scope.Tenant, scope.Metric, entity));
             var key = CacheKeyBuilder.ForEntity(scope, entity, version);
             var tags = new[] { CacheTag.Entity(entity), CacheTag.Metric(scope.Metric), CacheTag.Tenant(scope.Tenant) };
@@ -108,7 +107,7 @@ public sealed class PointCache(IPointCacheStore store, IDataVersionStore version
             long id = part.Numeric;
             if (!builders.TryGetValue(id, out var b))
             {
-                b = new PointBlock.Builder(block.Unit);
+                b = PointBlock.Builder.Like(block);
                 builders[id] = b;
             }
             b.Add(block.Row(i));
@@ -116,11 +115,13 @@ public sealed class PointCache(IPointCacheStore store, IDataVersionStore version
         return builders.ToDictionary(kv => kv.Key, kv => kv.Value.Build());
     }
 
-    private static Unit FirstUnit(Dictionary<long, PointBlock> hits, IReadOnlyDictionary<long, PointBlock> loaded)
+    /// <summary>A builder with the unit and time axis of the slices being merged (non-empty ones first,
+    /// since an empty slice for a data-less entity carries no real information).</summary>
+    private static PointBlock.Builder Template(Dictionary<long, PointBlock> hits, IReadOnlyDictionary<long, PointBlock> loaded)
     {
-        foreach (var b in hits.Values) return b.Unit;
-        foreach (var b in loaded.Values) return b.Unit;
-        return Unit.None;
+        var all = hits.Values.Concat(loaded.Values).ToList();
+        var like = all.FirstOrDefault(b => b.Count > 0) ?? all.FirstOrDefault();
+        return like is null ? new PointBlock.Builder(Unit.None) : PointBlock.Builder.Like(like);
     }
 
     private string BuildCoalesceKey(CacheScope scope, List<EntityRef> misses)

@@ -26,7 +26,8 @@ public sealed record ReportRequest(
     double? FilterMin = null,          // keep points with value >= FilterMin
     double? FilterMax = null,          // keep points with value <= FilterMax
     string? CategoryDim = null,        // e.g. "venue"
-    string? CategoryValue = null);     // e.g. "Home" — keep only this category
+    string? CategoryValue = null,      // e.g. "Home" — keep only this category
+    string? TimeZone = null);          // IANA zone the report's days/weeks are drawn in (default UTC)
 
 public static class ReportRequestMapper
 {

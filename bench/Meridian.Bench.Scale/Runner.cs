@@ -71,6 +71,11 @@ public static class Runner
             "Empty cache, resample pushed into SQL: one row per entity-week leaves DuckDB.",
             o.Iterations, () => Run(Cold(pushdown: true), Spec(ids))));
 
+        var london = ProjectionOptions.Default with { Calendar = CalendarContext.For("Europe/London") };
+        results.Add(await Measure("cold-pushdown-zoned", "Cold · pushdown · Europe/London",
+            "As cold-pushdown, but weeks drawn in London time: the UTC→local conversion happens inside DuckDB.",
+            o.Iterations, () => Run(Cold(pushdown: true), Spec(ids), london)));
+
         var warm = Cold(pushdown: true);
         await Run(warm, Spec(ids));
         results.Add(await Measure("warm", "Warm · cached",
@@ -112,9 +117,9 @@ public static class Runner
             Scenarios: results);
     }
 
-    private static async Task<int> Run(MeridianRuntime runtime, PipelineSpec spec)
+    private static async Task<int> Run(MeridianRuntime runtime, PipelineSpec spec, ProjectionOptions? options = null)
     {
-        var view = await runtime.Engine.RunAsync(spec, ProjectionOptions.Default);
+        var view = await runtime.Engine.RunAsync(spec, options ?? ProjectionOptions.Default);
         return view.Series.Sum(s => s.Marks.Count);
     }
 

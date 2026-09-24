@@ -34,7 +34,7 @@ internal sealed class FilterTransform(Func<Point, bool> predicate) : ITransform
 {
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
-        var builder = new PointBlock.Builder(input.Unit);
+        var builder = PointBlock.Builder.Like(input);
         for (int i = 0; i < input.Count; i++)
         {
             var row = input.Row(i);
@@ -48,7 +48,7 @@ internal sealed class MapTransform(Func<Point, Measurement> project) : ITransfor
 {
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
-        var builder = new PointBlock.Builder(input.Unit);
+        var builder = PointBlock.Builder.Like(input);
         for (int i = 0; i < input.Count; i++)
         {
             var row = input.Row(i);
@@ -62,7 +62,7 @@ internal sealed class RekeyTransform(Func<PointKey, PointKey> reproject) : ITran
 {
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
-        var builder = new PointBlock.Builder(input.Unit);
+        var builder = PointBlock.Builder.Like(input);
         for (int i = 0; i < input.Count; i++)
         {
             var row = input.Row(i);
@@ -91,7 +91,7 @@ internal sealed class ReduceTransform(Func<Point, PointKey> keySelector, IAggreg
             if (row.Measure.IsPresent) values.Add(row.Measure.Value);
         }
 
-        var builder = new PointBlock.Builder(input.Unit);
+        var builder = PointBlock.Builder.Like(input);
         foreach (var key in order)
         {
             var values = groups[key];
@@ -116,20 +116,23 @@ internal sealed class PerGroupTransform(Func<Point, PointKey> keySelector, ITran
             var key = keySelector(row);
             if (!groups.TryGetValue(key, out var builder))
             {
-                builder = new PointBlock.Builder(input.Unit);
+                builder = PointBlock.Builder.Like(input);
                 groups[key] = builder;
                 order.Add(key);
             }
             builder.Add(row);
         }
 
-        var output = new PointBlock.Builder(input.Unit);
+        // The inner transform may change the time axis (a resample makes local buckets), so the output
+        // takes its axis from the partitions, not from the input.
+        PointBlock.Builder? output = null;
         foreach (var key in order)
         {
             var partition = inner.Apply(groups[key].Build(), ctx);
+            output ??= PointBlock.Builder.Like(partition);
             for (int i = 0; i < partition.Count; i++) output.Add(partition.Row(i));
         }
-        return output.Build();
+        return output?.Build() ?? inner.Apply(PointBlock.Empty(input.Unit, input.Time), ctx);
     }
 }
 
@@ -165,7 +168,7 @@ internal sealed class RollingTransform(TimeSpan window, IAggregator aggregator) 
             list.Add(i);
         }
 
-        var output = new PointBlock.Builder(input.Unit);
+        var output = PointBlock.Builder.Like(input);
         var window = new List<double>();
 
         foreach (var key in order)

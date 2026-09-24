@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Meridian.Engine;
 using Meridian.Hosts.Http;
+using Meridian.Time;
 using Meridian.Views;
 using Meridian.Views.Json;
 
@@ -25,13 +26,20 @@ app.MapGet("/api/catalog", () => Results.Json(new
     aggregators = new[] { "mean", "sum", "min", "max", "median", "last", "count" },
     gaps = new[] { "leave-missing", "zero-fill", "carry-forward", "interpolate" },
     chartKinds = new[] { "line", "column", "area" },
+    timeZones = new[] { "UTC", "Europe/London", "America/New_York", "Australia/Sydney", "Asia/Tokyo" },
 }));
 
 // Query — the interactive builder path (cache-backed).
 app.MapPost("/api/report", async (ReportRequest request, CancellationToken ct) =>
 {
     var spec = ReportRequestMapper.ToSpec(request, Seed.Player, Seed.Tenant, today);
-    var view = await runtime.Engine.RunAsync(spec, ProjectionOptions.Default, ct);
+    var options = ProjectionOptions.Default;
+    if (request.TimeZone is { Length: > 0 } zone)
+    {
+        try { options = options with { Calendar = CalendarContext.For(zone) }; }
+        catch (ArgumentException e) { return Results.BadRequest(new { error = e.Message }); }
+    }
+    var view = await runtime.Engine.RunAsync(spec, options, ct);
     return Results.Text(ChartViewJson.Serialize(view), "application/json");
 });
 

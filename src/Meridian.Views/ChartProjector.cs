@@ -1,4 +1,5 @@
 using Meridian.Core;
+using Meridian.Time;
 
 namespace Meridian.Views;
 
@@ -72,9 +73,10 @@ public sealed class ChartProjector : IChartProjector
                 switch (spec.XAxis)
                 {
                     case TemporalAxisSource:
-                        var instant = new Instant(block.AtTicks[i]);
-                        at = block.AtTicks[i] == PointBlock.NoAt ? null : instant.ToUnixMilliseconds();
-                        label = block.AtTicks[i] == PointBlock.NoAt ? "" : options.Labels.TimeLabel(instant, options.Calendar);
+                        long ticks = block.AtTicks[i];
+                        // Epoch-millis of the stored ticks: a UTC moment for instants, the wall clock for local values.
+                        at = ticks == PointBlock.NoAt ? null : (ticks - DateTime.UnixEpoch.Ticks) / TimeSpan.TicksPerMillisecond;
+                        label = ticks == PointBlock.NoAt ? "" : options.Labels.TimeLabel(ticks, block.Time, options.Calendar);
                         break;
                     case CategoryAxisSource cat:
                         label = block.Keys[i].TryGet(cat.Dimension, out var cp) ? options.Labels.CategoryLabel(cp) : "";
@@ -96,16 +98,20 @@ public sealed class ChartProjector : IChartProjector
             series.Add(new SeriesView(name, seriesColor, marks));
         }
 
-        var axes = BuildAxes(spec, block.Unit, min, max);
+        var axes = BuildAxes(spec, block, options.Calendar, min, max);
         var legend = new LegendView(series.Select(v => v.Name).ToList());
         return new ChartView(spec.Kind, series, axes, legend, Annotations: []);
     }
 
-    private static IReadOnlyList<AxisView> BuildAxes(ViewSpec spec, Unit dataUnit, double min, double max)
+    private static IReadOnlyList<AxisView> BuildAxes(ViewSpec spec, PointBlock block, CalendarContext calendar, double min, double max)
     {
+        var dataUnit = block.Unit;
         AxisView xAxis = spec.XAxis switch
         {
-            TemporalAxisSource => new AxisView(AxisKind.Temporal, "Time"),
+            TemporalAxisSource => new AxisView(AxisKind.Temporal, "Time",
+                Time: block.Time.Kind,
+                TimeZone: block.Time.Kind == TimeKind.Instant ? calendar.Zone.Id : block.Time.Zone,
+                Grain: block.Time.Grain),
             CategoryAxisSource cat => new AxisView(AxisKind.Category, cat.Dimension.Name),
             _ => new AxisView(AxisKind.Category, ""),
         };

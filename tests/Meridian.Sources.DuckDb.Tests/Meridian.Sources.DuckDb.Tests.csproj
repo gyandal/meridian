@@ -2,8 +2,6 @@
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>
-    <!-- Non-UTC fallback test resolves an IANA zone; on Windows that mapping needs ICU. -->
-    <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>

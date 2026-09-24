@@ -80,7 +80,7 @@
       <div class="two"><div class="grp tpath"><label>Gap policy</label><select id="gap"></select></div><div class="grp"><label>Chart</label><select id="chart"></select></div></div>
       <div class="two"><div class="grp"><label>Value ≥</label><input type="number" id="fmin" placeholder="any"></div><div class="grp"><label>Value ≤</label><input type="number" id="fmax" placeholder="any"></div></div>
       <div class="grp" id="venueWrap" style="display:none"><label>Venue filter</label><select id="venueFilter"></select></div>
-      <div class="grp"><label>Past days</label><input type="number" id="days" value="120" min="14" max="800"></div>
+      <div class="two"><div class="grp"><label>Past days</label><input type="number" id="days" value="120" min="14" max="800"></div><div class="grp"><label>Time zone</label><select id="tz"></select></div></div>
       <div class="chk tpath"><input type="checkbox" id="seriesBy" checked><span>one series per athlete</span></div>
       <div class="chk"><input type="checkbox" id="statusOn"><span>status band</span>
         <input type="number" id="lo" value="60" style="width:56px" title="low"><input type="number" id="hi" value="85" style="width:56px" title="high"></div>
@@ -142,10 +142,13 @@ function renderChart(svg, view){
   const g=el("g",{class:"grid"});
   for(let i=0;i<=4;i++){const v=ymin+i/4*(ymax-ymin),yy=Y(v);g.appendChild(el("line",{x1:m.l,y1:yy,x2:W-m.r,y2:yy}));const t=el("text",{x:m.l-7,y:yy+3,"text-anchor":"end"});t.textContent=v.toFixed(0);g.appendChild(t);}
   svg.appendChild(g);
-  // x labels
+  // x labels — temporal ticks reuse the server's mark labels, which were made in the report's zone and grain
+  // (docs/TIME.md): the renderer never converts time zones itself.
+  const labelAt=new Map(marks.map(k=>[k.at,k.label]));
+  const tick=l=>/^\d{4}-\d{2}-\d{2}$/.test(l)?l.slice(5):/^\d{4}-\d{2}-\d{2} /.test(l)?l.slice(5,16):l;
   const step=Math.ceil(cats.length/6);
   cats.forEach((c,i)=>{ if(cats.length>7 && i%step!==0 && i!==cats.length-1) return;
-    const x=temporal?Xcont(c):Xslot(i); const lbl=temporal?(new Date(c)).toISOString().slice(5,10):c;
+    const x=temporal?Xcont(c):Xslot(i); const lbl=temporal?tick(labelAt.get(c)||""):c;
     const t=el("text",{x,y:H-9,"text-anchor":"middle"});t.textContent=lbl;svg.appendChild(t);});
 
   const nS=view.series.length;
@@ -182,6 +185,7 @@ async function boot(){
   $("#agg").innerHTML=c.aggregators.map(a=>`<option${a==="mean"?" selected":""}>${a}</option>`).join("");
   $("#gap").innerHTML=c.gaps.map(g=>`<option>${g}</option>`).join("");
   $("#chart").innerHTML=c.chartKinds.map(k=>`<option>${k}</option>`).join("");
+  $("#tz").innerHTML=c.timeZones.map(z=>`<option>${z}</option>`).join("");
   $("#ents").innerHTML=c.entities.map(e=>`<button data-id="${e.id}">${e.name}</button>`).join("");
   c.entities.slice(0,3).forEach(e=>selected.add(e.id)); syncEnts();
   $("#ents").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;const id=+b.dataset.id;selected.has(id)?selected.delete(id):selected.add(id);syncEnts();};
@@ -210,7 +214,7 @@ async function runBuilder(){
     period:$("#period").value,aggregator:$("#agg").value,gap:$("#gap").value,chartKind:$("#chart").value,
     seriesByEntity:$("#seriesBy").checked,statusOn:$("#statusOn").checked,statusLow:+$("#lo").value,statusHigh:+$("#hi").value,
     groupBy:g,filterMin:fmin===""?null:+fmin,filterMax:fmax===""?null:+fmax,
-    categoryDim:venue!=="Any"?"venue":null,categoryValue:venue!=="Any"?venue:null};
+    categoryDim:venue!=="Any"?"venue":null,categoryValue:venue!=="Any"?venue:null,timeZone:$("#tz").value};
   const view=await (await fetch("/api/report",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)})).json();
   $("#bTitle").textContent=`${$("#metric").selectedOptions[0].text} · ${g==="time"?body.transform:"grouped by "+g}`;
   $("#bLegend").innerHTML=legendHtml(view);

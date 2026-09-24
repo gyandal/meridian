@@ -5,8 +5,13 @@ namespace Meridian.Time;
 
 /// <summary>
 /// Resample longitudinal points into tumbling buckets — the single primitive for bucketing,
-/// gap handling and calendar grouping. Points keep their key; only the time axis collapses. Output points are positioned
-/// at bucket start; labels are never produced here (that is presentation's job).
+/// gap handling and calendar grouping. Points keep their key; only the time axis collapses.
+///
+/// Buckets are local (docs/TIME.md): instants are first placed on the calendar's wall clock, then
+/// grouped by calendar, so a London day holds exactly the readings from that London date. The output is
+/// a <see cref="TimeKind.Local"/> block positioned at each bucket's local start, tagged with the grain
+/// and the zone that decided the boundaries. Local input is bucketed as given, with no conversion.
+/// Labels are never produced here (that is presentation's job).
 ///
 /// This spike favours clarity over the eventual columnar/streaming hot path — the dictionary grouping
 /// below is where the SIMD/allocation pass will land once the benchmarks exist.
@@ -33,11 +38,26 @@ public static class Resampler
         ArgumentNullException.ThrowIfNull(aggregator);
         ArgumentNullException.ThrowIfNull(ctx);
 
+        long[] at;
+        string? zone;
+        if (input.Time.Kind == TimeKind.Instant)
+        {
+            at = new long[input.Count];
+            TimeZones.ToLocalTicks(input.AtTicks, at, ctx.Zone);
+            zone = ctx.Zone.Id;
+        }
+        else
+        {
+            at = input.AtTicks.ToArray();
+            zone = input.Time.Zone;
+        }
+        ctx = ctx.Floating; // everything below is plain calendar arithmetic on wall-clock ticks
+
         // Group row indices by key. Rows with no position are not longitudinal and are skipped.
         var byKey = new Dictionary<PointKey, List<int>>();
         for (int i = 0; i < input.Count; i++)
         {
-            if (input.AtTicks[i] == PointBlock.NoAt) continue;
+            if (at[i] == PointBlock.NoAt) continue;
             if (!byKey.TryGetValue(input.Keys[i], out var list))
             {
                 list = [];
@@ -46,18 +66,18 @@ public static class Resampler
             list.Add(i);
         }
 
-        var output = new PointBlock.Builder(input.Unit);
+        var output = new PointBlock.Builder(input.Unit, TimeAxis.Local(period.Name, zone));
 
         foreach (var (key, indices) in byKey)
         {
-            indices.Sort((a, b) => input.AtTicks[a].CompareTo(input.AtTicks[b]));
+            indices.Sort((a, b) => at[a].CompareTo(at[b]));
 
             // bucket-start-ticks -> present values, in ascending time order
             var buckets = new List<(long Start, List<double> Values)>();
             var lookup = new Dictionary<long, int>();
             foreach (var i in indices)
             {
-                long start = period.BucketFor(new Instant(input.AtTicks[i]), ctx).Start.UtcTicks;
+                long start = period.BucketFor(new Instant(at[i]), ctx).Start.UtcTicks;
                 if (!lookup.TryGetValue(start, out int pos))
                 {
                     pos = buckets.Count;
