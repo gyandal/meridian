@@ -17,7 +17,7 @@ dotnet test    -c Debug          # run all 166 tests across 8 projects
 
 ```bash
 dotnet run -c Release --project src/Meridian.Hosts.Http
-# → open the printed URL (e.g. http://localhost:5xxx)
+# → http://localhost:5731
 ```
 
 Two sections: an **interactive builder** (metric, athletes, transform, period, aggregator, gap policy,

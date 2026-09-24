@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "runId": "20260924-203943-1b-rows",
+  "label": "1b-rows",
+  "timestampUtc": "2026-09-24T20:39:43.6785179Z",
+  "commit": "11a0a99",
+  "machine": {
+    "os": "Microsoft Windows 10.0.26200",
+    "cpu": "Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz",
+    "logicalCores": 12,
+    "memoryGb": 31.9,
+    "dotnet": ".NET 10.0.9",
+    "duckDb": "v1.5.5"
+  },
+  "dataset": {
+    "spec": {
+      "entities": 6000,
+      "metrics": 5,
+      "days": 730,
+      "perDay": 48,
+      "gapPercent": 2,
+      "slots": 1051200000,
+      "end": "2025-12-31T00:00:00Z"
+    },
+    "rows": 1030174370,
+    "bytes": 3427821489,
+    "generateSeconds": 585.2593243,
+    "duckDbVersion": "v1.5.5"
+  },
+  "report": {
+    "metric": "metric-0",
+    "entities": 25,
+    "days": 365,
+    "transform": "resample(week, mean)",
+    "rawRowsInScope": 429241
+  },
+  "scenarios": [
+    {
+      "id": "sql-baseline",
+      "name": "Hand-written SQL",
+      "description": "The same weekly mean as one DuckDB GROUP BY, results read into memory. The floor for \u0027query the store yourself\u0027.",
+      "iterations": 5,
+      "minMs": 86.268,
+      "medianMs": 92.601,
+      "p95Ms": 107.67,
+      "meanMs": 96.583,
+      "pointsReturned": 1325
+    },
+    {
+      "id": "cold-raw",
+      "name": "Cold \u00B7 raw fetch",
+      "description": "Empty cache, no pushdown: every raw row is read into Meridian, then resampled in the engine.",
+      "iterations": 5,
+      "minMs": 257.237,
+      "medianMs": 313.359,
+      "p95Ms": 429.363,
+      "meanMs": 336.93,
+      "pointsReturned": 1325
+    },
+    {
+      "id": "cold-pushdown",
+      "name": "Cold \u00B7 pushdown",
+      "description": "Empty cache, resample pushed into SQL: one row per entity-week leaves DuckDB.",
+      "iterations": 5,
+      "minMs": 84.573,
+      "medianMs": 94.119,
+      "p95Ms": 107.754,
+      "meanMs": 95.418,
+      "pointsReturned": 1325
+    },
+    {
+      "id": "warm",
+      "name": "Warm \u00B7 cached",
+      "description": "The identical report again: served from Meridian\u0027s cache, the source is not touched.",
+      "iterations": 50,
+      "minMs": 0.561,
+      "medianMs": 0.587,
+      "p95Ms": 0.934,
+      "meanMs": 0.659,
+      "pointsReturned": 1325
+    },
+    {
+      "id": "incremental",
+      "name": "Warm \u00B7 \u002B1 entity",
+      "description": "The cached report plus one new entity: only the newcomer is fetched, the rest merge from cache.",
+      "iterations": 50,
+      "minMs": 30.821,
+      "medianMs": 35.075,
+      "p95Ms": 59.145,
+      "meanMs": 37.842,
+      "pointsReturned": 1378
+    },
+    {
+      "id": "invalidate-one",
+      "name": "Warm \u00B7 1 entity changed",
+      "description": "A write invalidates one entity; the next run refetches just that entity\u0027s slice.",
+      "iterations": 50,
+      "minMs": 29.838,
+      "medianMs": 32.635,
+      "p95Ms": 37.087,
+      "meanMs": 33.054,
+      "pointsReturned": 1325
+    },
+    {
+      "id": "rolling-28d",
+      "name": "Cold \u00B7 28-day rolling mean",
+      "description": "A longitudinal calc SQL makes awkward: daily means pushed down, then a per-entity 28-day rolling mean in the engine.",
+      "iterations": 5,
+      "minMs": 90.842,
+      "medianMs": 99.096,
+      "p95Ms": 119.692,
+      "meanMs": 103.628,
+      "pointsReturned": 9125
+    }
+  ]
+}

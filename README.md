@@ -41,7 +41,7 @@ samples/
 ```
 
 `dotnet test` → 166 passing. Targets **net10.0**, nullable + warnings-as-errors.
-Run the dashboard: `dotnet run --project src/Meridian.Hosts.Http` then open the printed URL.
+Run the dashboard: `dotnet run --project src/Meridian.Hosts.Http` → http://localhost:5731.
 Time a source: `dotnet run -c Release --project samples/Meridian.Bench.Source` (add `-- --mysql "<conn>" <metric> 1,2,3` for a real DB).
 
 ## The transform algebra (Phase 1)
@@ -140,20 +140,24 @@ Aggregation is already allocation-free. ACWR's 146 KB is the dictionary-grouping
 
 `bench/Meridian.Bench.Scale` generates a synthetic dataset as Parquet and times one report — weekly mean
 of one metric for 25 entities over a year — through every path. Measured on an i7-8700K (6 cores),
-32 GB, Windows 11, DuckDB 1.5.5, over **171.7M rows** (5 metrics × 2,000 entities × 2 years × hourly,
-577 MB Parquet; 215k raw rows in the report's scope):
+32 GB, Windows 11, DuckDB 1.5.5, at two scales:
 
-| Scenario | Median | What it shows |
-|---|---:|---|
-| Hand-written SQL | 88 ms | the floor: one DuckDB `GROUP BY`, results read into memory |
-| Cold · raw fetch | 295 ms | empty cache, every raw row moved into Meridian and resampled there |
-| **Cold · pushdown** | **97 ms** | empty cache, resample pushed into SQL — within ~10 ms of hand-written SQL |
-| **Warm · cached** | **0.72 ms** | repeat report, source untouched — ~120× faster than querying the store |
-| Warm · +1 entity | 33 ms | only the new entity is fetched; the rest merge from cache |
-| Warm · 1 entity changed | 31 ms | a write invalidates one entity; only its slice is refetched |
-| Cold · 28-day rolling mean | 91 ms | daily means pushed down, rolling window per entity in the engine |
+- **171.7M rows** — 5 metrics × 2,000 entities × 2 years × hourly · 577 MB Parquet · 215k raw rows in the report's scope
+- **1.03B rows** — 5 metrics × 6,000 entities × 2 years × half-hourly · 3.3 GB Parquet · 429k raw rows in scope
 
-The takeaways: pushdown makes Meridian's cold path cost about the same as writing the SQL yourself, and
+| Scenario | 171.7M rows | 1.03B rows | What it shows |
+|---|---:|---:|---|
+| Hand-written SQL | 88 ms | 93 ms | the floor: one DuckDB `GROUP BY`, results read into memory |
+| Cold · raw fetch | 295 ms | 313 ms | empty cache, every raw row moved into Meridian and resampled there |
+| **Cold · pushdown** | **97 ms** | **94 ms** | empty cache, resample pushed into SQL — level with hand-written SQL |
+| **Warm · cached** | **0.72 ms** | **0.59 ms** | repeat report, source untouched — 120–150× faster than querying the store |
+| Warm · +1 entity | 33 ms | 35 ms | only the new entity is fetched; the rest merge from cache |
+| Warm · 1 entity changed | 31 ms | 33 ms | a write invalidates one entity; only its slice is refetched |
+| Cold · 28-day rolling mean | 91 ms | 99 ms | daily means pushed down, rolling window per entity in the engine |
+
+Six times the data costs almost nothing: latency tracks the rows *in scope*, not the size of the table
+— consistent with DuckDB skipping Parquet row groups outside the requested entities (the generator
+writes rows sorted by metric → entity → time). Pushdown makes Meridian's cold path cost about the same as writing the SQL yourself, and
 everything after the first run is served from cache. The incremental scenarios are dominated by the
 store's fixed per-query cost (opening Parquet metadata), not by row volume. "Cold" means Meridian's cache
 is empty; the OS file cache is warm, as on a live server. Full results, including p95, are in
