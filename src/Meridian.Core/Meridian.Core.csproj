@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <IsPackable>true</IsPackable>
+    <Description>Meridian's core point model: instants, typed composite keys, measurements and the columnar PointBlock, plus aggregators and deterministic hashing.</Description>
   </PropertyGroup>
 </Project>

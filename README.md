@@ -1,267 +1,163 @@
 # Meridian
 
-A .NET 10 framework for longitudinal data: **define metrics once → transform → present → cache →
-query (by humans and agents)**, with time as a first-class citizen. Embeddable — drop it into a
-system that already sits on the data. See `PLAN.md` for the architecture.
+[![CI](https://github.com/gyandal/meridian/actions/workflows/ci.yml/badge.svg)](https://github.com/gyandal/meridian/actions/workflows/ci.yml)
+[![NuGet](https://img.shields.io/nuget/vpre/Meridian.Engine?label=nuget)](https://www.nuget.org/packages/Meridian.Engine)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## What's here
+**Embeddable, time-correct reporting for .NET systems that already own their data.**
 
-```
-src/
-  Meridian.Core/        Instant, DateInterval, typed keys (PointKey/KeyPart), Measurement,
-                        PointBlock (columnar), Aggregators, StableHash (deterministic cache keys)
-  Meridian.Time/        CalendarContext (IANA zones via NodaTime), seasons, tumbling Periods, GapPolicy,
-                        Resampler (instants → local calendar buckets), StoredTime + DST resolution
-  Meridian.Transforms/  ITransform + Pipeline; Filter/Map/Rekey/Reduce/PerGroup/Resample/Rolling;
-                        Binary.Combine + Compare (the two-input joins)
-  Meridian.Caching/     IPointCacheStore + IKeyValueStore backend contract; InMemory store;
-                        TaggedStoreDecorator (batteries-included tags); LayeredPointCacheStore;
-                        PointCache (per-entity partial-hit merge + single-flight); version + tag invalidation
-  Meridian.Views/       ChartView view model (chart-agnostic); ViewSpec; ITheme/ILabelResolver/
-                        IValueFormatter; ChartProjector (data → view; colour/label/status live HERE)
-  Meridian.Views.Json/  source-generated System.Text.Json wire contract for ChartView
-  Meridian.Engine/      IPointSource seam (+ optional IRollupPointSource pushdown); PipelineSpec;
-                        ReportEngine (catalog → cache → transforms → project); MeridianRuntime.InMemory
-  Meridian.Hosts.Http/  minimal API over the engine (/api/catalog, /api/report) + the dashboard page
-  Meridian.Hosts.Mcp/   agent tool surface: describe + query over the engine (transport-agnostic)
-  Meridian.Sources.MySql/  a real IPointSource over a MySQL datapoints table (MySqlConnector)
-  Meridian.Sources.DuckDb/ IRollupPointSource over DuckDB tables or Parquet files, resample pushed into SQL
-  Meridian.Semantics/   MetricDefinition / IMetricCatalog shape sketch
-tests/                  Core (15) + Time (28) + Transforms (12) + Caching (18) + Views (14) + Engine (13) + Hosts (11)
-                        + DuckDb source (804: pushdown parity across periods, zones, DST, wall-clock data; batching)
-bench/
-  Meridian.Benchmarks/  BenchmarkDotNet hot-path suite ([MemoryDiagnoser])
-  Meridian.Bench.Scale/ generate millions–billions of rows as Parquet, time cold/warm/pushdown → bench/results/*.json
-  results/              committed scale-run results, charted by the dashboard's Benchmarks section
-samples/
-  Meridian.Sample/          load → weekly resample → project → JSON (offline)
-  Meridian.Sample.Weather/  real Open-Meteo public API → engine → JSON (needs internet)
-  Meridian.Bench.Source/    cold-vs-warm timing harness for any IPointSource (synthetic, or --mysql "<conn>")
-  dashboard-snapshot.html   a rendered ChartView gallery (static, shareable)
-```
+Meridian turns points over time — sensor readings, training loads, trips, orders, usage events — into
+finished, chart-ready series. You define your metrics once and point Meridian at the store you already
+have (a SQL database, Parquet files, an API); it handles bucketing in the right time zone, gap filling,
+rolling windows, comparisons, caching and invalidation, and hands back chart-agnostic JSON that any front
+end, API client or AI agent can use.
 
-`dotnet test` → 915 passing. Targets **net10.0**, nullable + warnings-as-errors.
-Run the dashboard: `dotnet run --project src/Meridian.Hosts.Http` → http://localhost:5731.
-Time a source: `dotnet run -c Release --project samples/Meridian.Bench.Source` (add `-- --mysql "<conn>" <metric> 1,2,3` for a real DB).
-
-## The transform algebra (Phase 1)
-
-`ITransform` is `PointBlock → PointBlock`, closed under composition. The headline proof is the
-acute:chronic workload ratio — a canonical longitudinal calc that is usually bespoke code —
-as pure composition:
+It's a set of NuGet packages, not a service: no new infrastructure, no data copy.
 
 ```csharp
-var acute   = Transform.Rolling(TimeSpan.FromDays(7),  Aggregators.Mean).Apply(load, ctx);
-var chronic = Transform.Rolling(TimeSpan.FromDays(28), Aggregators.Mean).Apply(load, ctx);
-var acwr    = Binary.Combine(acute, chronic, (a, c) => a / c, matchTime: true);
+var chart = await meridian.Engine.RunAsync(
+    PipelineSpec.Create("my-club", trainingLoad, athletes, lastSixMonths,
+        new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: athlete),
+        Transform.Resample(Period.Week, Aggregators.Mean, GapPolicy.LeaveMissing)),
+    ProjectionOptions.Default with { Calendar = CalendarContext.For("Europe/London") });
 ```
 
-`PerGroup(keySelector, inner)` runs any inner transform per-partition (so two athletes' rolling
-windows never bleed), and `Pipeline.Of(...)` threads a block through an ordered chain.
+## Why Meridian
 
-## Caching (Phase 2)
+- **Time done right.** Instants and calendar dates are different kinds of time, and Meridian keeps them
+  apart: readings are bucketed into days and weeks *in the report's time zone* (DST included), dates of
+  birth and match days never shift, and legacy wall-clock columns are read with explicit DST rules.
+  [How time works →](docs/TIME.md)
+- **Fast on data you already have.** Bucketing is pushed down into the database when it can be done
+  exactly, so the first run costs what hand-written SQL costs; repeats come from cache in microseconds.
+  Several metrics for the same entities are fetched in one query.
+- **Caching that doesn't serve stale data.** Per-entity slices (adding one entity to a report fetches
+  only that entity), finished-view caching, and invalidation driven by writes — versioned keys mean a
+  missed event can't serve stale data.
+- **One definition, every surface.** The same metric catalog drives charts, a REST API and a typed agent
+  tool surface (describe the metrics, query a bounded report) — safer than letting an agent write SQL.
+- **Chart-agnostic output.** `ChartView` is plain JSON: series, marks, typed axes, server-side labels and
+  status. Map it to Highcharts, Recharts, D3, or a table.
 
-The Hangfire model: a small store contract with pluggable backends, and write-driven invalidation.
+## Use cases
 
-- **Minimal backend contract** — a backend implements only `IKeyValueStore` (Get/Set/Remove).
-  `TaggedStoreDecorator` adds tag-group eviction over *any* such store via a maintained `tag → keys`
-  index, so a backend inherits `RemoveByTag` for free. `LayeredPointCacheStore` stacks L1/L2.
-- **Deterministic keys** — `CacheKeyBuilder` hashes a canonical string (via `StableHash`), so a
-  logical request always keys the same. No random per-instance keys.
-- **Per-entity partial-hit merge** — `PointCache` caches one slice per entity; a request for
-  `{1,2,3}` after `{1,2}` loads *only* `{3}` and merges. With single-flight stampede protection.
-- **Invalidation on write** — no stale window waiting on expiry. The write path raises a `ChangeScope` to one `ICacheInvalidator` hook, with two strategies:
-  `VersionBumpInvalidator` (version is in the key → clean miss on any backend) and
-  `TagEvictionInvalidator` (immediate `RemoveByTag`). A write→read test proves staleness is gone.
-- **Conformance suite** — `StoreConformance` is one xUnit suite every backend must pass; it runs
-  against InMemory and Layered here, and Redis/SQL would subclass and pass the same tests.
+- **Athlete and team performance** — training load per athlete per week, acute:chronic workload ratios,
+  wellness scores by date, this season vs last.
+- **Fleet, IoT and infrastructure telemetry** — per-device minute and hour rollups over billions of
+  readings (the [TSBS](docs/BENCHMARKS.md#standard-workload-tsbs-cpu-only) workload).
+- **Operations and mobility** — orders, trips or tickets per site per week in each site's local time
+  (see the [NYC taxi benchmark](docs/BENCHMARKS.md#real-data-nyc-taxi-trips)).
+- **Per-customer product analytics** — usage per account per week, embedded in your own product.
+- **Agent-facing analytics** — let an assistant answer "how did load change for these players this month?"
+  through bounded, typed queries.
 
-## Views (Phase 3)
+Meridian is not a BI tool or a query language: it's the reporting layer inside your application.
 
-The presentation layer — where colour, label, epoch-millis, and status→colour finally live, from a
-datum that carried none of them.
+## Install
 
-- **`ChartView`** is chart-agnostic: series → marks, typed axes (Temporal/Linear/Category), legend,
-  annotations-as-data. No charting-library concepts; a front-end maps it to Highcharts/Recharts/D3.
-- **`ViewSpec`** is the per-chart difference — line vs column vs pie is a spec swap, not a new
-  provider. This is the concrete form of "unify toward multi-series."
-- **`ChartProjector`** applies theme colour (by series index or semantic status), formats labels via
-  an injected `ILabelResolver`/`IValueFormatter`, computes `At` epoch-millis once, and orders temporal
-  marks by instant (not by formatted name, so months never sort alphabetically).
-- **`Meridian.Views.Json`** is a source-generated wire contract (camelCase, string enums, nulls
-  omitted). Run `dotnet run -c Release --project samples/Meridian.Sample` to print a real `ChartView`.
+```bash
+dotnet add package Meridian.Engine --prerelease
+dotnet add package Meridian.Sources.DuckDb --prerelease   # or Meridian.Sources.MySql, or your own IPointSource
+dotnet add package Meridian.Views.Json --prerelease       # the JSON contract for ChartView
+```
 
-## Engine (Phase 4)
+Targets .NET 10.
 
-The keystone that turns six libraries into "give a spec, get a chart".
+## Quick start
 
-- **`PipelineSpec`** declares a report: tenant + metric + entities + timeframe + transforms + view.
-- **`ReportEngine.RunAsync`** resolves the metric from the catalog, does a cache-aware **per-entity**
-  fetch (calling `IPointSource` only for misses), applies the transform pipeline, and projects to a
-  `ChartView`. Raw source data is cached (compact `PointBlock`); transforms/projection run per request.
-- **`IPointSource`** is the per-client data seam. `InMemoryPointSource` for tests; the Weather sample
-  ships an `HttpWeatherSource` over the free Open-Meteo API — the *same engine* runs both.
-- **View cache** — identical requests return the finished `ChartView` from a bounded in-process cache.
-  Its key includes every input's data version, so a write makes old views unreachable, and every
-  transform's stable identity: built-ins have one; wrap a lambda transform in `Transform.Named(...)` to
-  make reports that use it cacheable (unnamed ones simply aren't cached).
-- **`RunManyAsync`** runs several reports at once; with an `IBatchPointSource` (DuckDB is one), reports
-  that share entities and timeframe — a dashboard of metrics — are fetched in one source query, and the
-  cache loads only what each is missing.
-- **`MeridianRuntime.InMemory`** wires the default composition (tagged store + version/tag invalidation
-  + projector); swap the store for Redis and nothing else changes.
+From [`samples/Meridian.Sample.QuickStart`](samples/Meridian.Sample.QuickStart/Program.cs) — runnable
+with `dotnet run --project samples/Meridian.Sample.QuickStart`:
 
-Proven by tests: end-to-end projection, second identical run served from cache, adding an entity
-fetches only the new one, invalidating an entity forces just its refetch, unknown metric errors clearly.
+```csharp
+var athlete = new DimensionId("athlete");
+var trainingLoad = new MetricId("training-load");
 
-## Hosts + dashboard (Phase 5)
+// 1. Define the metric once.
+var catalog = new InMemoryMetricCatalog(
+[
+    new MetricDefinition(trainingLoad, "Training load", new Unit("au"), "mean", [athlete], TimeGrain.Instant),
+]);
 
-Thin query surfaces over the one Engine.
+// 2. Point Meridian at your data where it already lives: here, Parquet files queried in place by DuckDB.
+var source = new DuckDbPointSource(
+    new DuckDbSourceOptions("Data Source=:memory:", Relation: "read_parquet('data/load/*.parquet')"),
+    athlete);
 
-- **`Meridian.Hosts.Http`** — a minimal API: `GET /api/catalog` (describe), `POST /api/report`
-  (run → `ChartView` JSON), `GET /api/showcase` (server-computed feature panels), `GET /api/stats`
-  (live cache-fetch counter), plus a **self-contained dashboard** (`wwwroot/index.html`) that renders
-  ChartViews with a hand-written SVG renderer — *no charting library*. Two sections: an **interactive
-  builder** (every period, aggregator, gap policy, status band, grouping, chart kind) and a **feature
-  showcase** gallery of 10 panels covering rolling/ACWR-with-status/gap-policies/category-axis/season/
-  year-on-year-goals/aggregator-sweep/second-metric. See `docs/USAGE.md` for a worked real-world example.
-- **`Meridian.Hosts.Mcp`** — the agent tool surface: two tools, `describe` (the catalog an agent needs)
-  and `query` (a bounded typed request → finished ChartView). Because a query is a typed spec, not free
-  SQL, every call is safe, auditable, cacheable. Transport-agnostic; a real MCP server binds these two
-  methods — the protocol wrapper is intentionally out of the spike.
+var meridian = MeridianRuntime.InMemory(catalog, source);
 
-Both are covered by in-process integration tests (`WebApplicationFactory` for HTTP, direct calls for MCP).
+// 3. Ask for a report: weekly mean load per athlete, in London weeks.
+var report = PipelineSpec.Create(
+    tenant: "my-club",
+    metric: trainingLoad,
+    entities: [new EntityRef(athlete, 7), new EntityRef(athlete, 9)],
+    timeframe: new DateInterval(Instant.FromUtc(new DateTime(2026, 1, 1)), Instant.FromUtc(new DateTime(2026, 7, 1))),
+    view: new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: athlete),
+    Transform.Resample(Period.Week, Aggregators.Mean, GapPolicy.LeaveMissing));
 
-## Benchmark baseline (Apple M5, .NET 10, ShortRun)
+var chart = await meridian.Engine.RunAsync(report,
+    ProjectionOptions.Default with { Calendar = CalendarContext.For("Europe/London") });
 
-| Benchmark | Mean | Allocated |
-|---|---|---|
-| `AggregateMean_100k` (SoA span) | ~55 µs | **0 B** |
-| `Acwr_OneSeason` (365d, 7d+28d rolling + combine) | ~70 µs | 146 KB |
+// 4. A chart-agnostic view: hand the JSON to any charting library, API client or agent.
+Console.WriteLine(ChartViewJson.Serialize(chart));
+```
 
-Aggregation is already allocation-free. ACWR's 146 KB is the dictionary-grouping in `Rolling`/
-`Resampler` — the exact thing the columnar/SIMD pass exists to remove. Run: `dotnet run -c Release
---project bench/Meridian.Benchmarks`.
+When your data changes, tell Meridian and only the affected cache entries are dropped:
 
-## Scale benchmarks
+```csharp
+await meridian.Invalidator.InvalidateAsync(new ChangeScope("my-club", "training-load", new EntityRef(athlete, 7)));
+```
 
-Three workloads, all measured on an i7-8700K (6 cores), 32 GB, Windows 11, .NET 10, DuckDB 1.5.5. "Cold"
-means Meridian's cache is empty (the database and OS file cache are warm, as on a live server); "warm" is
-the same report again. Every run checks that Meridian's answer equals the database's before timing it.
-Full results, including p95, are in `bench/results/` and charted in the dashboard's **Benchmarks** section.
+A longer worked example (goals per athlete, this season vs last) is in [docs/USAGE.md](docs/USAGE.md).
 
-### Synthetic: 172M and 1B rows
+## Benchmarks
 
-`bench/Meridian.Bench.Scale` generates a longitudinal dataset as Parquet and times one report — weekly
-mean of one metric for 25 entities over a year — through every path.
+Measured on a 6-core desktop; full method, tables and reproduction steps in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-- **171.7M rows** — 5 metrics × 2,000 entities × 2 years × hourly · 577 MB Parquet · 215k raw rows in the report's scope
-- **1.03B rows** — 5 metrics × 6,000 entities × 2 years × half-hourly · 3.3 GB Parquet · 429k raw rows in scope
+| Workload | Hand-written SQL | Meridian, first run | Meridian, repeat |
+|---|---:|---:|---:|
+| Weekly report, 25 entities, **1.03 billion rows** of Parquet | 91 ms | 78 ms | 0.01 ms |
+| Weekly trips per zone in New York time, **47.5M real NYC taxi trips** | 717 ms | 735 ms | 0.01 ms |
+| TSBS `cpu-max-all-8` (10 metrics, 8 hosts), **259M values** | 74 ms¹ | 75 ms | 0.03 ms |
+| TSBS `double-groupby-all` (130,000-point result) | 1,258 ms¹ | 1,664 ms | 2.4 ms |
 
-| Scenario | 171.7M rows | 1.03B rows | What it shows |
-|---|---:|---:|---|
-| Hand-written SQL | 83 ms | 91 ms | the floor: one DuckDB `GROUP BY`, results read into memory |
-| Cold · raw fetch | 227 ms | 395 ms | every raw row moved into Meridian and resampled there |
-| **Cold · pushdown** | **88 ms** | **78 ms** | resample pushed into SQL — level with hand-written SQL |
-| Cold · pushdown, London weeks | 74 ms | 84 ms | weeks drawn in Europe/London, zone conversion inside the SQL |
-| **Warm · cached** | **0.01 ms** | **0.01 ms** | the identical report again: the finished chart comes from cache |
-| Warm · +1 entity | 14 ms | 21 ms | only the new entity is fetched; the rest merge from cache |
-| Warm · 1 entity changed | 12 ms | 20 ms | a write invalidates one entity; only its slice is refetched |
-| Cold · 28-day rolling mean | 80 ms | 85 ms | daily means pushed down, rolling window per entity in the engine |
+¹ SQL over the same long layout Meridian reads. TSBS's native wide schema (a column per metric) is
+faster for multi-metric queries; a wide-table source is on the roadmap.
 
-Six times the data costs almost nothing: latency tracks the rows *in scope*, not the size of the table —
-consistent with DuckDB skipping Parquet row groups outside the requested entities (the generator writes
-rows sorted by metric → entity → time).
+The dashboard (`dotnet run --project src/Meridian.Hosts.Http` → http://localhost:5731) charts every
+committed benchmark run, with history.
 
-### Real data: NYC taxi trips
+## Packages
 
-**47.5M real trips** — NYC TLC yellow-taxi records, Jul 2025 → Jun 2026, 775 MB of public Parquet read in
-place. Pickup times are New York wall-clock times with no zone, so the source is declared
-`StoredTime.InZone("America/New_York")` and weeks are New York weeks, across both DST changes. Report:
-weekly trips for the 10 busiest pickup zones (15.9M trips in scope).
+| Package | What it is |
+|---|---|
+| `Meridian.Engine` | the report engine: catalog → cache → pushdown/batching → transforms → view |
+| `Meridian.Core`, `Meridian.Time`, `Meridian.Transforms` | the point model, time handling, the transform algebra |
+| `Meridian.Caching`, `Meridian.Semantics` | cache and invalidation; the metric catalog |
+| `Meridian.Views`, `Meridian.Views.Json` | chart-agnostic views and their JSON contract |
+| `Meridian.Sources.DuckDb`, `Meridian.Sources.MySql` | data sources |
+| `Meridian.Hosts.Mcp` | the agent tool surface |
 
-| Scenario | Median | |
-|---|---:|---|
-| Hand-written SQL | 717 ms | `date_trunc('week')` on the logged wall clock |
-| Cold · raw fetch | 13.3 s | every trip into Meridian, converted from New York time, then bucketed |
-| **Cold · pushdown** | **735 ms** | DST-correct conversion and bucketing inside DuckDB — within 3% of hand-written SQL |
-| **Warm · cached** | **0.01 ms** | |
-| Warm · +1 zone | 280 ms | the files aren't sorted by zone, so one zone still scans them all |
-| Cold · 28-day rolling mean | 750 ms | New York days pushed down, rolling window in the engine |
+## Documentation
 
-The "+1 zone" row contrasts with the synthetic data: there, entity-sorted Parquet made adding an entity
-~14 ms; here the store's layout decides.
+- [docs/TIME.md](docs/TIME.md) — instants vs local values, time zones, DST, reading stored timestamps
+- [docs/USAGE.md](docs/USAGE.md) — a worked example and the pattern for your own data
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the pieces fit, and why
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — methods, results, reproduction
+- [CHANGELOG.md](CHANGELOG.md) · [ROADMAP.md](ROADMAP.md)
 
-### Standard workload: TSBS cpu-only
+## Roadmap
 
-[TSBS](https://github.com/timescale/tsbs) is the Time Series Benchmark Suite used to compare time-series
-databases. Data from TSBS's own generator — `cpu-only`, 1,000 hosts × 3 days at 10 s, **25.9M readings ×
-10 metrics = 259M values** — and eight TSBS query types, 20 random instances each (medians):
+In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: wide-table and PostgreSQL /
+SQL Server / ClickHouse sources, year-on-year and season-aligned comparisons, more aggregators
+(percentiles, standard deviation), a Redis cache backend and an MCP server. Later: forecasting and
+scenario modelling. See [ROADMAP.md](ROADMAP.md).
 
-| Query | SQL, TSBS wide schema | SQL, long layout | Meridian cold | Meridian warm |
-|---|---:|---:|---:|---:|
-| single-groupby-1-1-1 | 20 ms | 17 ms | 16 ms | 0.01 ms |
-| single-groupby-1-1-12 | 16 ms | 16 ms | 21 ms | < 0.01 ms |
-| single-groupby-1-8-1 | 20 ms | 20 ms | 20 ms | 0.01 ms |
-| single-groupby-5-1-1 | 22 ms | 30 ms | 29 ms | 0.02 ms |
-| single-groupby-5-8-1 | 22 ms | 39 ms | 40 ms | 0.02 ms |
-| cpu-max-all-8 | 29 ms | 74 ms | 75 ms | 0.03 ms |
-| double-groupby-1 | 130 ms | 138 ms | 190 ms | 0.39 ms |
-| double-groupby-all | 292 ms | 1,258 ms | 1,664 ms | 2.4 ms |
+## Contributing
 
-What it says, plainly:
-
-- **Cold, Meridian costs about what the same query costs in SQL over the same data.** Pushdown makes the
-  first run cost what the SQL costs.
-- **Warm, it's a lookup.** Identical requests return the finished chart from an in-process view cache
-  (bounded, invalidated with the data), so even the 130,000-point `double-groupby-all` answers in 2.4 ms
-  (before view caching: 120 ms, since transforms and projection re-ran per request).
-- **Multi-metric queries are one source query.** A Meridian report covers one metric, but
-  `RunManyAsync` batches reports that share entities and timeframe into a single `metric IN (…)` fetch
-  (`IBatchPointSource`). Before batching, the 5- and 10-metric queries above took 72 / 95 / 197 ms cold;
-  now 29 / 40 / 75 ms — level with SQL on the long layout.
-- **The remaining gap is storage layout, not Meridian.** TSBS's wide schema stores all 10 metrics in one
-  row, so a 10-metric query reads a tenth as many rows as the long layout (one row per metric value)
-  that Meridian's source reads. A source over a wide table could close it.
-- The published TSBS results for other databases ran on other hardware, so compare shapes, not absolute
-  numbers. Reproduce with `tsbs-generate` and `tsbs-run` (see `BUILD.md`).
-
-**Pushdown** (`IRollupPointSource`): when a report starts with a resample the source can compute exactly
-(DuckDB: sub-daily (`Period.Every`), day / week from any start day / month buckets, in any IANA zone, for UTC, wall-clock-in-a-zone
-or date columns, with mean, sum, min, max, count, median or last), the engine asks for one point per
-entity-bucket instead of every raw row. Zone conversions in the SQL are generated from NodaTime's rules,
-so they can't disagree with the engine. Anything else — seasons, custom aggregators — falls back to a raw
-fetch, so results never change; parity tests check every period × aggregator × gap policy in several
-zones across real DST changes.
-
-## Time
-
-Instants are stored and moved as UTC; calendar values (a date of birth, a match day, a daily wellness
-answer) are kept exactly as given. Bucketing into days, weeks and months happens in the report's time
-zone and produces calendar buckets — so a London day holds exactly that London date's readings, across
-DST — and charts say which zone drew them. Sources declare how their timestamps are stored (UTC, wall
-clock in a zone with a DST policy, or local dates). The full model is in [`docs/TIME.md`](docs/TIME.md).
-
-## What the design guarantees
-
-- **Deterministic, order-independent keys.** `PointKey.Of(a, b) == PointKey.Of(b, a)`, and
-  `StableHash64()` is identical across constructions/processes. Equality is on typed values, so `Category("1")` and `Ordinal(1)` no longer collide.
-- **Time is chronological, never alphabetical.** A month bucket sorts by instant, so February
-  precedes August — never a `date.ToString("MMMM")` grouping.
-- **DST-correct buckets.** A London "day" is 23h across spring-forward and 25h across fall-back
-  (tested). UTC internal, timezone applied only at bucket boundaries.
-- **Resample is one primitive** covering spreading, gap-skipping and month grouping,
-  with explicit `GapPolicy` (LeaveMissing / ZeroFill / CarryForward / Interpolate), missing values
-  excluded from aggregation, and entities kept independent.
-
-## Deliberately deferred (not in Phase 0)
-
-- The columnar/SIMD hot path — `PointBlock` exposes the SoA layout but `Resampler` still groups via
-  dictionaries. This is where the benchmark-driven perf pass lands (Phase 1).
-- A source over wide tables (a column per metric), for TSBS-style schemas.
-- Bucketing by the local day where each event happened (instant + stored offset), for entities that
-  travel across zones — the time model leaves room for it (`docs/TIME.md`).
-- Quartiles/SD/percentage aggregators, and the full metric catalog (source binding, change→tag).
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for building, testing and
+the few rules (warnings are errors; time and pushdown changes need parity tests). Please follow the
+[code of conduct](CODE_OF_CONDUCT.md), and report security issues privately as described in
+[SECURITY.md](SECURITY.md).
 
 ## License
 

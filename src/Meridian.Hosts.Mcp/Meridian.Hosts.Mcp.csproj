@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <IsPackable>true</IsPackable>
+    <Description>An agent tool surface for Meridian: describe the metric catalog and run bounded, typed report queries.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />

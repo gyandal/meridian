@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <IsPackable>true</IsPackable>
+    <Description>Meridian's report engine: metric catalog, cache-aware fetch with aggregation pushdown and multi-metric batching, transforms, finished-view caching, and projection to chart-agnostic views.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />

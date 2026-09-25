@@ -5,6 +5,7 @@
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/Meridian.Bench.Source/Meridian.Bench.Source.csproj" />
+    <Project Path="samples/Meridian.Sample.QuickStart/Meridian.Sample.QuickStart.csproj" />
     <Project Path="samples/Meridian.Sample.Weather/Meridian.Sample.Weather.csproj" />
     <Project Path="samples/Meridian.Sample/Meridian.Sample.csproj" />
   </Folder>

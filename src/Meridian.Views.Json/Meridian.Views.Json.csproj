@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <IsPackable>true</IsPackable>
+    <Description>Source-generated System.Text.Json contract for Meridian's ChartView.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Meridian.Views/Meridian.Views.csproj" />

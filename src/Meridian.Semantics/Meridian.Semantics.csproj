@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <IsPackable>true</IsPackable>
+    <Description>Metric catalog for Meridian: define metrics once (unit, default aggregation, dimensions, time kind) and use them from reports, APIs and agents.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />

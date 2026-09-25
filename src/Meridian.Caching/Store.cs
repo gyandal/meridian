@@ -6,7 +6,7 @@ namespace Meridian.Caching;
 /// <summary>A cached value. Holds the compact <see cref="PointBlock"/> — never the projected view.</summary>
 public sealed record CacheEntry(PointBlock Block);
 
-/// <summary>Expiry options. Absolute expiry only for the spike; sliding is a store detail to add later.</summary>
+/// <summary>Expiry options. Absolute expiry only for now; sliding expiry is a store detail to add later.</summary>
 public readonly record struct CacheEntryOptions(DateTimeOffset? AbsoluteExpiration = null)
 {
     public static readonly CacheEntryOptions None = new();

@@ -13,8 +13,8 @@ namespace Meridian.Time;
 /// and the zone that decided the boundaries. Local input is bucketed as given, with no conversion.
 /// Labels are never produced here (that is presentation's job).
 ///
-/// This spike favours clarity over the eventual columnar/streaming hot path — the dictionary grouping
-/// below is where the SIMD/allocation pass will land once the benchmarks exist.
+/// This favours clarity over a columnar/streaming hot path for now — the dictionary grouping
+/// below is where a SIMD/allocation pass would land (bench/Meridian.Benchmarks is the guard).
 /// </summary>
 public static class Resampler
 {

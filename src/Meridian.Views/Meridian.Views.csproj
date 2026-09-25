@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <IsPackable>true</IsPackable>
+    <Description>Chart-agnostic views for Meridian: series, marks and typed axes with server-side labels, themes and status rules, for any charting library.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />

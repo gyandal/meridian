@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <IsPackable>true</IsPackable>
+    <Description>Time for longitudinal reporting: IANA time zones (NodaTime), calendars and seasons, day/week/month/sub-daily buckets, gap policies, DST-safe resampling, and how stored timestamps are read.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />
