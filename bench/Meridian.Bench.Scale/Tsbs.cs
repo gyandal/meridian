@@ -250,7 +250,7 @@ public static class Tsbs
         var perHost = Transform.Resample(period, type.Aggregator, GapPolicy.LeaveMissing);
         ITransform[] transforms = type.PerHost
             ? [perHost]
-            : [perHost, Transform.Rekey(_ => PointKey.Empty), Transform.Resample(period, type.Aggregator, GapPolicy.LeaveMissing)];
+            : [perHost, Transform.Named("merge-hosts", Transform.Rekey(_ => PointKey.Empty)), Transform.Resample(period, type.Aggregator, GapPolicy.LeaveMissing)];
         return PipelineSpec.Create("tsbs", new MetricId(metric), [.. q.Hosts.Select(h => new EntityRef(Host, h))], q.Window,
             new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: type.PerHost ? Host : null), transforms);
     }

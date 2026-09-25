@@ -10,7 +10,7 @@
 
 ```bash
 dotnet build   -c Release        # build all libraries, hosts, samples and benchmarks
-dotnet test    -c Debug          # run all 907 tests across 8 projects
+dotnet test    -c Debug          # run all 915 tests across 8 projects
 ```
 
 ## The dashboard (start here)

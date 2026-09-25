@@ -28,6 +28,19 @@ public static class Transform
     /// <summary>Rolling window over time, per key. Window is (t - <paramref name="window"/>, t].</summary>
     public static ITransform Rolling(TimeSpan window, IAggregator aggregator) =>
         new RollingTransform(window, aggregator);
+
+    /// <summary>
+    /// Gives a transform built from a lambda (Filter, Map, Rekey…) a stable name, so results that use it can
+    /// be cached. The name is a promise: the same name must always mean the same behaviour.
+    /// </summary>
+    public static ITransform Named(string name, ITransform inner) => new NamedTransform(name, inner);
+}
+
+internal sealed class NamedTransform(string name, ITransform inner) : ITransform, ICacheIdentity
+{
+    public string CacheIdentity => $"named({name})";
+
+    public PointBlock Apply(PointBlock input, TransformContext ctx) => inner.Apply(input, ctx);
 }
 
 internal sealed class FilterTransform(Func<Point, bool> predicate) : ITransform
@@ -137,19 +150,23 @@ internal sealed class PerGroupTransform(Func<Point, PointKey> keySelector, ITran
 }
 
 /// <summary>Public so the engine can recognise a leading resample and push it down to a capable source.</summary>
-public sealed class ResampleTransform(IPeriod period, IAggregator aggregator, GapPolicy gap) : ITransform
+public sealed class ResampleTransform(IPeriod period, IAggregator aggregator, GapPolicy gap) : ITransform, ICacheIdentity
 {
     public IPeriod Period { get; } = period;
     public IAggregator Aggregator { get; } = aggregator;
     public GapPolicy Gap { get; } = gap;
 
+    public string CacheIdentity => $"resample({Period.Name},{Aggregator.Name},{Gap})";
+
     public PointBlock Apply(PointBlock input, TransformContext ctx) =>
         Resampler.Resample(input, Period, Aggregator, Gap, ctx.Calendar);
 }
 
-internal sealed class RollingTransform(TimeSpan window, IAggregator aggregator) : ITransform
+internal sealed class RollingTransform(TimeSpan window, IAggregator aggregator) : ITransform, ICacheIdentity
 {
     private readonly long _windowTicks = window.Ticks;
+
+    public string CacheIdentity => $"rolling({_windowTicks},{aggregator.Name})";
 
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {

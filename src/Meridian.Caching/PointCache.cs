@@ -35,6 +35,11 @@ public sealed class PointCache(IPointCacheStore store, IDataVersionStore version
         return Merge(entities, hits, loaded);
     }
 
+    /// <summary>The current data version of each entity in <paramref name="scope"/>, in order — anything
+    /// derived from those slices is valid exactly while this stamp is unchanged.</summary>
+    public string VersionStamp(CacheScope scope, IReadOnlyList<EntityRef> entities) =>
+        string.Join(',', entities.Select(e => $"{e.Id}v{versions.Current(new ChangeScope(scope.Tenant, scope.Metric, e))}"));
+
     /// <summary>
     /// The batched form of <see cref="GetOrLoadAsync"/>: several scopes over the same entities (e.g. several
     /// metrics of one request). Each scope is probed per entity as usual; scopes missing the same entities

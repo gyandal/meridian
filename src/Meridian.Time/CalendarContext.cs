@@ -31,8 +31,10 @@ public interface ISeasonCalendar
 }
 
 /// <summary>A season that starts on a fixed month/day each year (e.g. 1 July → 30 June).</summary>
-public sealed class FixedSeasonCalendar(int startMonth = 7, int startDay = 1) : ISeasonCalendar
+public sealed class FixedSeasonCalendar(int startMonth = 7, int startDay = 1) : ISeasonCalendar, ICacheIdentity
 {
+    public string CacheIdentity => $"season({startMonth},{startDay})";
+
     public DateInterval SeasonFor(Instant instant, CalendarContext ctx)
     {
         var local = TimeZones.ToLocal(instant, ctx.Zone);

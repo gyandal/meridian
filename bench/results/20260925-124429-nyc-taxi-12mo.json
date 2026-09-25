@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "runId": "20260925-124429-nyc-taxi-12mo",
+  "label": "nyc-taxi-12mo",
+  "timestampUtc": "2026-09-25T12:44:29.6171282Z",
+  "commit": "d16321b",
+  "machine": {
+    "os": "Microsoft Windows 10.0.26200",
+    "cpu": "Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz",
+    "logicalCores": 12,
+    "memoryGb": 31.9,
+    "dotnet": ".NET 10.0.9",
+    "duckDb": "v1.5.5"
+  },
+  "dataset": {
+    "rows": 47475748,
+    "bytes": 812496195,
+    "generateSeconds": 0,
+    "duckDbVersion": "v1.5.5",
+    "name": "nyc-yellow-taxi",
+    "description": "NYC yellow taxi trips 2025-07 \u2192 2026-06 \u00B7 263 pickup zones \u00B7 New York wall-clock times"
+  },
+  "report": {
+    "metric": "trips",
+    "entities": 10,
+    "days": 363,
+    "transform": "resample(week, sum) in America/New_York",
+    "rawRowsInScope": 15907413
+  },
+  "scenarios": [
+    {
+      "id": "sql-baseline",
+      "name": "Hand-written SQL",
+      "description": "The obvious analyst query: GROUP BY pickup zone and date_trunc(\u0027week\u0027) on the logged wall-clock time.",
+      "iterations": 4,
+      "minMs": 691.766,
+      "medianMs": 717.339,
+      "p95Ms": 782.691,
+      "meanMs": 729.055,
+      "pointsReturned": 530
+    },
+    {
+      "id": "cold-raw",
+      "name": "Cold \u00B7 raw fetch",
+      "description": "Empty cache, no pushdown: every trip is read into Meridian, converted from New York time, then bucketed.",
+      "iterations": 2,
+      "minMs": 12569.03,
+      "medianMs": 13271.973,
+      "p95Ms": 13904.621,
+      "meanMs": 13271.973,
+      "pointsReturned": 530
+    },
+    {
+      "id": "cold-pushdown",
+      "name": "Cold \u00B7 pushdown",
+      "description": "Empty cache, New York DST conversion and weekly bucketing both done inside DuckDB.",
+      "iterations": 4,
+      "minMs": 726.073,
+      "medianMs": 735.397,
+      "p95Ms": 741.122,
+      "meanMs": 734.61,
+      "pointsReturned": 530
+    },
+    {
+      "id": "warm",
+      "name": "Warm \u00B7 cached",
+      "description": "The identical report again: served from Meridian\u0027s cache.",
+      "iterations": 30,
+      "minMs": 0.006,
+      "medianMs": 0.008,
+      "p95Ms": 0.018,
+      "meanMs": 0.009,
+      "pointsReturned": 530
+    },
+    {
+      "id": "incremental",
+      "name": "Warm \u00B7 \u002B1 zone",
+      "description": "The cached report plus one more pickup zone: only the newcomer is fetched.",
+      "iterations": 30,
+      "minMs": 202.955,
+      "medianMs": 279.647,
+      "p95Ms": 309.848,
+      "meanMs": 274.8,
+      "pointsReturned": 582
+    },
+    {
+      "id": "invalidate-one",
+      "name": "Warm \u00B7 1 zone changed",
+      "description": "A write invalidates one zone; the next run refetches just that zone.",
+      "iterations": 30,
+      "minMs": 307.058,
+      "medianMs": 330.151,
+      "p95Ms": 372.697,
+      "meanMs": 333.506,
+      "pointsReturned": 530
+    },
+    {
+      "id": "rolling-28d",
+      "name": "Cold \u00B7 28-day rolling mean",
+      "description": "Daily trips per zone pushed down (New York days), then a 28-day rolling mean in the engine.",
+      "iterations": 4,
+      "minMs": 742.216,
+      "medianMs": 749.974,
+      "p95Ms": 818.945,
+      "meanMs": 768.312,
+      "pointsReturned": 3640
+    }
+  ]
+}

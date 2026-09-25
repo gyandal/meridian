@@ -27,7 +27,7 @@ src/
   Meridian.Sources.MySql/  a real IPointSource over a MySQL datapoints table (MySqlConnector)
   Meridian.Sources.DuckDb/ IRollupPointSource over DuckDB tables or Parquet files, resample pushed into SQL
   Meridian.Semantics/   MetricDefinition / IMetricCatalog shape sketch
-tests/                  Core (15) + Time (28) + Transforms (12) + Caching (18) + Views (14) + Engine (5) + Hosts (11)
+tests/                  Core (15) + Time (28) + Transforms (12) + Caching (18) + Views (14) + Engine (13) + Hosts (11)
                         + DuckDb source (804: pushdown parity across periods, zones, DST, wall-clock data; batching)
 bench/
   Meridian.Benchmarks/  BenchmarkDotNet hot-path suite ([MemoryDiagnoser])
@@ -40,7 +40,7 @@ samples/
   dashboard-snapshot.html   a rendered ChartView gallery (static, shareable)
 ```
 
-`dotnet test` → 907 passing. Targets **net10.0**, nullable + warnings-as-errors.
+`dotnet test` → 915 passing. Targets **net10.0**, nullable + warnings-as-errors.
 Run the dashboard: `dotnet run --project src/Meridian.Hosts.Http` → http://localhost:5731.
 Time a source: `dotnet run -c Release --project samples/Meridian.Bench.Source` (add `-- --mysql "<conn>" <metric> 1,2,3` for a real DB).
 
@@ -101,6 +101,10 @@ The keystone that turns six libraries into "give a spec, get a chart".
   `ChartView`. Raw source data is cached (compact `PointBlock`); transforms/projection run per request.
 - **`IPointSource`** is the per-client data seam. `InMemoryPointSource` for tests; the Weather sample
   ships an `HttpWeatherSource` over the free Open-Meteo API — the *same engine* runs both.
+- **View cache** — identical requests return the finished `ChartView` from a bounded in-process cache.
+  Its key includes every input's data version, so a write makes old views unreachable, and every
+  transform's stable identity: built-ins have one; wrap a lambda transform in `Transform.Named(...)` to
+  make reports that use it cacheable (unnamed ones simply aren't cached).
 - **`RunManyAsync`** runs several reports at once; with an `IBatchPointSource` (DuckDB is one), reports
   that share entities and timeframe — a dashboard of metrics — are fetched in one source query, and the
   cache loads only what each is missing.
@@ -156,14 +160,14 @@ mean of one metric for 25 entities over a year — through every path.
 
 | Scenario | 171.7M rows | 1.03B rows | What it shows |
 |---|---:|---:|---|
-| Hand-written SQL | 78 ms | 94 ms | the floor: one DuckDB `GROUP BY`, results read into memory |
-| Cold · raw fetch | 194 ms | 306 ms | every raw row moved into Meridian and resampled there |
-| **Cold · pushdown** | **72 ms** | **81 ms** | resample pushed into SQL — level with hand-written SQL |
-| Cold · pushdown, London weeks | 83 ms | 85 ms | weeks drawn in Europe/London, zone conversion inside the SQL |
-| **Warm · cached** | **0.65 ms** | **0.64 ms** | repeat report, source untouched — 120–150× faster than querying the store |
-| Warm · +1 entity | 14 ms | 20 ms | only the new entity is fetched; the rest merge from cache |
+| Hand-written SQL | 83 ms | 91 ms | the floor: one DuckDB `GROUP BY`, results read into memory |
+| Cold · raw fetch | 227 ms | 395 ms | every raw row moved into Meridian and resampled there |
+| **Cold · pushdown** | **88 ms** | **78 ms** | resample pushed into SQL — level with hand-written SQL |
+| Cold · pushdown, London weeks | 74 ms | 84 ms | weeks drawn in Europe/London, zone conversion inside the SQL |
+| **Warm · cached** | **0.01 ms** | **0.01 ms** | the identical report again: the finished chart comes from cache |
+| Warm · +1 entity | 14 ms | 21 ms | only the new entity is fetched; the rest merge from cache |
 | Warm · 1 entity changed | 12 ms | 20 ms | a write invalidates one entity; only its slice is refetched |
-| Cold · 28-day rolling mean | 82 ms | 82 ms | daily means pushed down, rolling window per entity in the engine |
+| Cold · 28-day rolling mean | 80 ms | 85 ms | daily means pushed down, rolling window per entity in the engine |
 
 Six times the data costs almost nothing: latency tracks the rows *in scope*, not the size of the table —
 consistent with DuckDB skipping Parquet row groups outside the requested entities (the generator writes
@@ -178,12 +182,12 @@ weekly trips for the 10 busiest pickup zones (15.9M trips in scope).
 
 | Scenario | Median | |
 |---|---:|---|
-| Hand-written SQL | 739 ms | `date_trunc('week')` on the logged wall clock |
-| Cold · raw fetch | 10.8 s | every trip into Meridian, converted from New York time, then bucketed |
-| **Cold · pushdown** | **746 ms** | DST-correct conversion and bucketing inside DuckDB — within 1% of hand-written SQL |
-| **Warm · cached** | **0.34 ms** | |
-| Warm · +1 zone | 261 ms | the files aren't sorted by zone, so one zone still scans them all |
-| Cold · 28-day rolling mean | 724 ms | New York days pushed down, rolling window in the engine |
+| Hand-written SQL | 717 ms | `date_trunc('week')` on the logged wall clock |
+| Cold · raw fetch | 13.3 s | every trip into Meridian, converted from New York time, then bucketed |
+| **Cold · pushdown** | **735 ms** | DST-correct conversion and bucketing inside DuckDB — within 3% of hand-written SQL |
+| **Warm · cached** | **0.01 ms** | |
+| Warm · +1 zone | 280 ms | the files aren't sorted by zone, so one zone still scans them all |
+| Cold · 28-day rolling mean | 750 ms | New York days pushed down, rolling window in the engine |
 
 The "+1 zone" row contrasts with the synthetic data: there, entity-sorted Parquet made adding an entity
 ~14 ms; here the store's layout decides.
@@ -196,29 +200,29 @@ databases. Data from TSBS's own generator — `cpu-only`, 1,000 hosts × 3 days 
 
 | Query | SQL, TSBS wide schema | SQL, long layout | Meridian cold | Meridian warm |
 |---|---:|---:|---:|---:|
-| single-groupby-1-1-1 | 17 ms | 17 ms | 17 ms | 0.21 ms |
-| single-groupby-1-1-12 | 15 ms | 16 ms | 19 ms | 0.47 ms |
-| single-groupby-1-8-1 | 18 ms | 18 ms | 19 ms | 0.23 ms |
-| single-groupby-5-1-1 | 18 ms | 28 ms | 29 ms | 0.19 ms |
-| single-groupby-5-8-1 | 23 ms | 37 ms | 41 ms | 1.57 ms |
-| cpu-max-all-8 | 27 ms | 67 ms | 72 ms | 0.41 ms |
-| double-groupby-1 | 130 ms | 129 ms | 178 ms | 9.6 ms |
-| double-groupby-all | 298 ms | 1,245 ms | 1,637 ms | 120 ms |
+| single-groupby-1-1-1 | 20 ms | 17 ms | 16 ms | 0.01 ms |
+| single-groupby-1-1-12 | 16 ms | 16 ms | 21 ms | < 0.01 ms |
+| single-groupby-1-8-1 | 20 ms | 20 ms | 20 ms | 0.01 ms |
+| single-groupby-5-1-1 | 22 ms | 30 ms | 29 ms | 0.02 ms |
+| single-groupby-5-8-1 | 22 ms | 39 ms | 40 ms | 0.02 ms |
+| cpu-max-all-8 | 29 ms | 74 ms | 75 ms | 0.03 ms |
+| double-groupby-1 | 130 ms | 138 ms | 190 ms | 0.39 ms |
+| double-groupby-all | 292 ms | 1,258 ms | 1,664 ms | 2.4 ms |
 
 What it says, plainly:
 
-- **Cold, Meridian costs about what the same query costs in SQL over the same data** — and warm it is
-  roughly 80× faster. Pushdown makes the first run cost what the SQL costs; the cache makes the rest free.
+- **Cold, Meridian costs about what the same query costs in SQL over the same data.** Pushdown makes the
+  first run cost what the SQL costs.
+- **Warm, it's a lookup.** Identical requests return the finished chart from an in-process view cache
+  (bounded, invalidated with the data), so even the 130,000-point `double-groupby-all` answers in 2.4 ms
+  (before view caching: 120 ms, since transforms and projection re-ran per request).
 - **Multi-metric queries are one source query.** A Meridian report covers one metric, but
   `RunManyAsync` batches reports that share entities and timeframe into a single `metric IN (…)` fetch
   (`IBatchPointSource`). Before batching, the 5- and 10-metric queries above took 72 / 95 / 197 ms cold;
-  now 29 / 41 / 72 ms — level with SQL on the long layout.
+  now 29 / 40 / 75 ms — level with SQL on the long layout.
 - **The remaining gap is storage layout, not Meridian.** TSBS's wide schema stores all 10 metrics in one
   row, so a 10-metric query reads a tenth as many rows as the long layout (one row per metric value)
   that Meridian's source reads. A source over a wide table could close it.
-- **Large results make "warm" less free.** `double-groupby-all` returns 130,000 points; the cache spares
-  the database, but transforms and projection still run per request (120 ms). Caching finished views for
-  identical requests would close that.
 - The published TSBS results for other databases ran on other hardware, so compare shapes, not absolute
   numbers. Reproduce with `tsbs-generate` and `tsbs-run` (see `BUILD.md`).
 
@@ -254,8 +258,7 @@ clock in a zone with a DST policy, or local dates). The full model is in [`docs/
 
 - The columnar/SIMD hot path — `PointBlock` exposes the SoA layout but `Resampler` still groups via
   dictionaries. This is where the benchmark-driven perf pass lands (Phase 1).
-- Caching finished views for identical requests with very large results (TSBS `double-groupby-all`), and
-  a source over wide tables (a column per metric).
+- A source over wide tables (a column per metric), for TSBS-style schemas.
 - Bucketing by the local day where each event happened (instant + stored offset), for entities that
   travel across zones — the time model leaves room for it (`docs/TIME.md`).
 - Quartiles/SD/percentage aggregators, and the full metric catalog (source binding, change→tag).

@@ -25,7 +25,8 @@ public sealed class ReportEngine(
     IMetricCatalog catalog,
     IPointSource source,
     PointCache cache,
-    IChartProjector projector) : IReportEngine
+    IChartProjector projector,
+    ViewCache? views = null) : IReportEngine
 {
     /// <summary>How one report will be served: its metric, cache scope, pushed-down rollup (if any), and
     /// the transforms still to run in the engine.</summary>
@@ -34,6 +35,9 @@ public sealed class ReportEngine(
     public async Task<ChartView> RunAsync(PipelineSpec spec, ProjectionOptions options, CancellationToken ct = default)
     {
         var plan = Prepare(spec, options);
+        var viewKey = ViewKey(plan, options);
+        if (viewKey is not null && views!.TryGet(viewKey, options, out var cached)) return cached;
+
         var metric = plan.Metric;
         PointLoader loader = plan.Rollup is { } rollup
             ? (missing, token) => ((IRollupPointSource)source).FetchRollupAsync(metric, missing, spec.Timeframe, rollup, token)
@@ -41,7 +45,7 @@ public sealed class ReportEngine(
                 CheckTimeKind(metric, await source.FetchAsync(metric, missing, spec.Timeframe, token).ConfigureAwait(false));
 
         var raw = await cache.GetOrLoadAsync(plan.Scope, spec.Entities, loader, ct).ConfigureAwait(false);
-        return Finish(plan, raw, options);
+        return Finish(plan, raw, options, viewKey);
     }
 
     /// <summary>
@@ -59,15 +63,20 @@ public sealed class ReportEngine(
         }
 
         var plans = specs.Select(s => Prepare(s, options)).ToList();
-        var views = new ChartView[plans.Count];
+        var result = new ChartView[plans.Count];
+        var viewKeys = plans.Select(p => ViewKey(p, options)).ToList();
 
-        var groups = Enumerable.Range(0, plans.Count).GroupBy(i => BatchKey(plans[i])).ToList();
+        // Finished views already cached need no data at all; batch only the rest.
+        var pending = Enumerable.Range(0, plans.Count)
+            .Where(i => viewKeys[i] is not { } key || !views!.TryGet(key, options, out result[i]))
+            .ToList();
+        var groups = pending.GroupBy(i => BatchKey(plans[i])).ToList();
         await Task.WhenAll(groups.Select(async group =>
         {
             var members = group.ToList();
             if (members.Select(i => plans[i].Metric.Id).Distinct().Count() == 1)
             {
-                foreach (var i in members) views[i] = await RunAsync(specs[i], options, ct).ConfigureAwait(false);
+                foreach (var i in members) result[i] = await RunAsync(specs[i], options, ct).ConfigureAwait(false);
                 return;
             }
 
@@ -88,10 +97,10 @@ public sealed class ReportEngine(
             };
 
             var raws = await cache.GetOrLoadManyAsync([.. members.Select(i => plans[i].Scope)], first.Spec.Entities, loader, ct).ConfigureAwait(false);
-            foreach (var i in members) views[i] = Finish(plans[i], raws[plans[i].Scope], options);
+            foreach (var i in members) result[i] = Finish(plans[i], raws[plans[i].Scope], options, viewKeys[i]);
         })).ConfigureAwait(false);
 
-        return views;
+        return result;
     }
 
     private Plan Prepare(PipelineSpec spec, ProjectionOptions options)
@@ -139,7 +148,41 @@ public sealed class ReportEngine(
         $"{p.Spec.Tenant}|{p.Scope.EntityDimension.Name}|{p.Spec.Timeframe.Start.UtcTicks}|{p.Spec.Timeframe.End.UtcTicks}|" +
         $"{p.Scope.Signature}|{string.Join(',', p.Spec.Entities.Select(e => e.Id))}";
 
-    private ChartView Finish(Plan plan, PointBlock raw, ProjectionOptions options)
+    /// <summary>
+    /// The finished-view cache key, or null when the request can't be cached: no view cache, or an input
+    /// without a stable identity (e.g. an unnamed lambda transform). It includes the current data version of
+    /// every entity, computed BEFORE fetching, so a view built across a concurrent write is keyed to the
+    /// old version and never served after it.
+    /// </summary>
+    private string? ViewKey(Plan plan, ProjectionOptions options)
+    {
+        if (views is null) return null;
+
+        var transforms = new List<string>(plan.Transforms.Length);
+        foreach (var t in plan.Transforms)
+        {
+            if (t is not ICacheIdentity id) return null;
+            transforms.Add(id.CacheIdentity);
+        }
+        var view = ResolvedView(plan);
+        if (view.Status is { } status && status is not ICacheIdentity) return null;
+        if (options.Calendar.Season is not ICacheIdentity season) return null;
+
+        var s = plan.Scope;
+        var axis = view.XAxis is CategoryAxisSource c ? "cat:" + c.Dimension.Name : "time";
+        return string.Join('|',
+            s.Tenant, s.Metric, s.EntityDimension.Name, s.Timeframe.Start.UtcTicks, s.Timeframe.End.UtcTicks, s.Signature,
+            cache.VersionStamp(s, plan.Spec.Entities),
+            string.Join(';', transforms),
+            view.Kind, axis, view.SeriesBy?.Name, view.ValueAxisTitle, view.ValueUnit?.Symbol, (view.Status as ICacheIdentity)?.CacheIdentity,
+            options.Calendar.Zone.Id, options.Calendar.WeekStart, season.CacheIdentity);
+    }
+
+    private static ViewSpec ResolvedView(Plan plan) =>
+        // Default the value unit from the catalog if the view didn't pin one.
+        plan.Spec.View.ValueUnit is null ? plan.Spec.View with { ValueUnit = plan.Metric.Unit } : plan.Spec.View;
+
+    private ChartView Finish(Plan plan, PointBlock raw, ProjectionOptions options, string? viewKey)
     {
         var transformContext = new TransformContext(options.Calendar);
         var current = raw;
@@ -148,9 +191,12 @@ public sealed class ReportEngine(
             current = transform.Apply(current, transformContext);
         }
 
-        // Default the value unit from the catalog if the view didn't pin one.
-        var view = plan.Spec.View.ValueUnit is null ? plan.Spec.View with { ValueUnit = plan.Metric.Unit } : plan.Spec.View;
-        return projector.Project(current, view, options);
+        var view = projector.Project(current, ResolvedView(plan), options);
+        if (viewKey is not null)
+        {
+            views!.Set(viewKey, options, view, plan.Spec.Entities.Select(e => ViewCache.Tag(plan.Spec.Tenant, plan.Metric.Id.Value, e)));
+        }
+        return view;
     }
 
     private static PointBlock CheckTimeKind(MetricDefinition metric, PointBlock block)

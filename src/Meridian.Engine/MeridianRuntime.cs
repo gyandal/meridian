@@ -13,17 +13,20 @@ public sealed record MeridianRuntime(
     ReportEngine Engine,
     ICacheInvalidator Invalidator,
     IDataVersionStore Versions,
-    IPointCacheStore Store)
+    IPointCacheStore Store,
+    ViewCache Views)
 {
-    public static MeridianRuntime InMemory(IMetricCatalog catalog, IPointSource source)
+    public static MeridianRuntime InMemory(IMetricCatalog catalog, IPointSource source, long viewCacheMarks = 1_000_000)
     {
         var versions = new InMemoryDataVersionStore();
         var store = new TaggedStoreDecorator(new InMemoryKeyValueStore());
         var cache = new PointCache(store, versions);
-        var engine = new ReportEngine(catalog, source, cache, ChartProjector.Instance);
+        var views = new ViewCache(viewCacheMarks);
+        var engine = new ReportEngine(catalog, source, cache, ChartProjector.Instance, views);
         var invalidator = new CompositeInvalidator(
             new VersionBumpInvalidator(versions),   // correctness backbone
-            new TagEvictionInvalidator(store));      // immediate reclaim
-        return new MeridianRuntime(engine, invalidator, versions, store);
+            new TagEvictionInvalidator(store),       // immediate reclaim of raw slices
+            views);                                  // and of finished views
+        return new MeridianRuntime(engine, invalidator, versions, store, views);
     }
 }

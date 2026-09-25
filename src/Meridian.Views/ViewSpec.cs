@@ -32,8 +32,10 @@ public interface IStatusRule
 }
 
 /// <summary>Good inside [low, high]; Watch just outside; Bad far outside (by a margin).</summary>
-public sealed class TargetBand(double low, double high, double watchMargin = 0) : IStatusRule
+public sealed class TargetBand(double low, double high, double watchMargin = 0) : IStatusRule, ICacheIdentity
 {
+    public string CacheIdentity => FormattableString.Invariant($"band({low},{high},{watchMargin})");
+
     public SemanticStatus Evaluate(double value)
     {
         if (value >= low && value <= high) return SemanticStatus.Good;
