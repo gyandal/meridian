@@ -6,6 +6,14 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 ## [Unreleased]
 
 ### Added
+- **Dashboards**: `Dashboard` (charts defined against a shared `DashboardContext` of tenant, entities and
+  timeframe) and `ReportEngine.RunDashboardAsync`. Focusing on one entity is the same dashboard with a
+  narrower context, served from the per-entity cache.
+- **`DashboardDefinition`**: dashboards as JSON — declarative transforms (resample, rolling, groupBy,
+  total), views and axes — for products that let users build and store dashboards. Errors name the
+  JSON path of the problem (`DashboardDefinitionException`).
+- Demo: `GET /api/dashboard/example`, `POST /api/dashboard`, and a squad dashboard with focus-on-player
+  and a live count of source fetches per view.
 - **Multi-series charts**: `ChartSpec` combines several reports into one chart — goals as columns,
   minutes on a second axis, goals per 90 as a line. `ReportEngine.RunChartAsync` / `RunChartsAsync` run
   every part of every chart together (shared fetches and batches); `ChartComposer` names, colours and

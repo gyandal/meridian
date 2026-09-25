@@ -29,6 +29,9 @@ public sealed record ReportRequest(
     string? CategoryValue = null,      // e.g. "Home" — keep only this category
     string? TimeZone = null);          // IANA zone the report's days/weeks are drawn in (default UTC)
 
+/// <summary>Run a dashboard definition for some players over the last <paramref name="PastDays"/> days.</summary>
+public sealed record DashboardRequest(DashboardDefinition Definition, long[] Entities, int PastDays = 365, string? TimeZone = null);
+
 public static class ReportRequestMapper
 {
     private static DimensionId Dim(string name) => name switch

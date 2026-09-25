@@ -119,6 +119,19 @@ public sealed class ReportEngine(
         return result;
     }
 
+    /// <summary>
+    /// Runs a dashboard for a context: every series of every chart loads together (shared fetches, batched
+    /// queries), so a dashboard costs about as many queries as distinct metric shapes it shows — and re-running
+    /// it focused on one entity reuses the cached slices.
+    /// </summary>
+    public async Task<DashboardView> RunDashboardAsync(Dashboard dashboard, DashboardContext context, ProjectionOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(dashboard);
+        ArgumentNullException.ThrowIfNull(context);
+        var views = await RunChartsAsync(dashboard.For(context), options, ct).ConfigureAwait(false);
+        return new DashboardView(dashboard.Title, [.. dashboard.Charts.Select((c, i) => new DashboardChartView(c.Title, views[i]))]);
+    }
+
     // ------------------------------------------------------------------------------------------ planning
 
     private Request Prepare(PipelineSpec spec, ProjectionOptions options)

@@ -189,6 +189,40 @@ public class HttpHostTests(WebApplicationFactory<Program> factory) : IClassFixtu
     }
 
     [Fact]
+    public async Task The_example_dashboard_runs_and_focusing_on_a_player_needs_no_new_fetches()
+    {
+        var client = _factory.CreateClient();
+        using var definition = JsonDocument.Parse(await client.GetStringAsync("/api/dashboard/example"));
+
+        async Task<JsonDocument> Run(long[] players)
+        {
+            var response = await client.PostAsJsonAsync("/api/dashboard", new { definition = definition.RootElement, entities = players, pastDays = 365 });
+            response.EnsureSuccessStatusCode();
+            return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        }
+
+        using var squad = await Run([1, 2, 3, 4]);
+        Assert.Equal(5, squad.RootElement.GetProperty("charts").GetArrayLength());
+        Assert.Equal(2, squad.RootElement.GetProperty("charts")[0].GetProperty("chartView").GetProperty("series").GetArrayLength());
+
+        using var focused = await Run([3]);
+        Assert.Equal(0, focused.RootElement.GetProperty("sourceFetches").GetInt32()); // player 3's slices were already cached
+    }
+
+    [Fact]
+    public async Task A_bad_dashboard_definition_is_a_400_naming_the_problem()
+    {
+        var client = _factory.CreateClient();
+        var response = await client.PostAsJsonAsync("/api/dashboard", new
+        {
+            definition = new { title = "x", charts = new[] { new { title = "c", series = new[] { new { metric = "goals", transforms = new[] { new { kind = "smooth" } } } } } } },
+            entities = new[] { 1 },
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("charts[0].series[0].transforms[0].kind", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task Dashboard_page_is_served()
     {
         var client = _factory.CreateClient();
