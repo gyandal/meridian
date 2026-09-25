@@ -60,31 +60,32 @@ The "+1 zone" row contrasts with the synthetic data: there, entity-sorted Parque
 databases. Data from TSBS's own generator — `cpu-only`, 1,000 hosts × 3 days at 10 s, **25.9M readings ×
 10 metrics = 259M values** — and eight TSBS query types, 20 random instances each (medians):
 
-| Query | SQL, TSBS wide schema | SQL, long layout | Meridian cold | Meridian warm |
-|---|---:|---:|---:|---:|
-| single-groupby-1-1-1 | 20 ms | 17 ms | 16 ms | 0.01 ms |
-| single-groupby-1-1-12 | 16 ms | 16 ms | 21 ms | < 0.01 ms |
-| single-groupby-1-8-1 | 20 ms | 20 ms | 20 ms | 0.01 ms |
-| single-groupby-5-1-1 | 22 ms | 30 ms | 29 ms | 0.02 ms |
-| single-groupby-5-8-1 | 22 ms | 39 ms | 40 ms | 0.02 ms |
-| cpu-max-all-8 | 29 ms | 74 ms | 75 ms | 0.03 ms |
-| double-groupby-1 | 130 ms | 138 ms | 190 ms | 0.39 ms |
-| double-groupby-all | 292 ms | 1,258 ms | 1,664 ms | 2.4 ms |
+| Query | SQL, wide schema | SQL, long layout | Meridian cold, long | **Meridian cold, wide** | Meridian warm |
+|---|---:|---:|---:|---:|---:|
+| single-groupby-1-1-1 | 19 ms | 17 ms | 18 ms | **17 ms** | 0.01 ms |
+| single-groupby-1-1-12 | 18 ms | 16 ms | 20 ms | **19 ms** | < 0.01 ms |
+| single-groupby-1-8-1 | 18 ms | 18 ms | 20 ms | **20 ms** | < 0.01 ms |
+| single-groupby-5-1-1 | 16 ms | 30 ms | 29 ms | **19 ms** | 0.01 ms |
+| single-groupby-5-8-1 | 22 ms | 39 ms | 41 ms | **25 ms** | 0.02 ms |
+| cpu-max-all-8 | 27 ms | 75 ms | 79 ms | **33 ms** | 0.03 ms |
+| double-groupby-1 | 136 ms | 140 ms | 181 ms | **159 ms** | 0.22 ms |
+| double-groupby-all | 262 ms | 1,243 ms | 1,617 ms | **552 ms** | 2.35 ms |
+
+"Wide" is TSBS's native schema — one row per reading, a column per metric — read directly by the DuckDB
+source (`MetricColumns`); "long" is one row per value. Both hold the same 259M values.
 
 What it says, plainly:
 
-- **Cold, Meridian costs about what the same query costs in SQL over the same data.** Pushdown makes the
-  first run cost what the SQL costs.
+- **Cold, Meridian costs about what the same query costs in SQL on the same schema.** Pushdown does the
+  bucketing in the database; reading the wide schema directly, a 10-metric query is one scan, as in SQL.
 - **Warm, it's a lookup.** Identical requests return the finished chart from an in-process view cache
-  (bounded, invalidated with the data), so even the 130,000-point `double-groupby-all` answers in 2.4 ms
-  (before view caching: 120 ms, since transforms and projection re-ran per request).
-- **Multi-metric queries are one source query.** A Meridian report covers one metric, but
-  `RunManyAsync` batches reports that share entities and timeframe into a single `metric IN (…)` fetch
-  (`IBatchPointSource`). Before batching, the 5- and 10-metric queries above took 72 / 95 / 197 ms cold;
-  now 29 / 40 / 75 ms — level with SQL on the long layout.
-- **The remaining gap is storage layout, not Meridian.** TSBS's wide schema stores all 10 metrics in one
-  row, so a 10-metric query reads a tenth as many rows as the long layout (one row per metric value)
-  that Meridian's source reads. A source over a wide table could close it.
+  (bounded, invalidated with the data): microseconds, and 2.35 ms for the 130,000-point result.
+- **The history, for the record.** One source query per metric made 5- and 10-metric queries 4–7× slower
+  than SQL at first; batching (`RunManyAsync`) brought them level with SQL on the long layout, and the wide
+  source brings them to within about 25% of SQL on TSBS's own schema.
+- **What's left is presentation.** `double-groupby-all` returns 130,000 values; SQL hands back rows, while
+  Meridian builds a chart of 130,000 labelled marks (552 ms vs 262 ms). Cheaper projection for very large
+  results is on the roadmap.
 - The published TSBS results for other databases ran on other hardware, so compare shapes, not absolute
   numbers. Reproduce with `tsbs-generate` and `tsbs-run` (see [Reproduce](#reproduce)).
 

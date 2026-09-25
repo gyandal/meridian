@@ -16,8 +16,8 @@ namespace Meridian.Bench.Scale;
 /// <summary>
 /// The TSBS (Time Series Benchmark Suite, github.com/timescale/tsbs) cpu-only workload. Data comes from
 /// TSBS's own generator; the queries are TSBS's query types with the same semantics and random instances
-/// (hosts, time windows). Each runs four ways: DuckDB SQL over TSBS's native wide schema, DuckDB SQL over
-/// the long layout Meridian reads, and Meridian cold (empty cache) and warm.
+/// (hosts, time windows). Each runs five ways: DuckDB SQL over TSBS's native wide schema and over a long
+/// layout (one row per value), Meridian cold over each, and Meridian warm.
 /// </summary>
 public static class Tsbs
 {
@@ -148,6 +148,10 @@ public static class Tsbs
         // One source (one database) for the whole run, as a live application holds; "cold" = empty Meridian cache.
         var source = new DuckDbPointSource(sourceOptions, Host);
         MeridianRuntime Fresh() => MeridianRuntime.InMemory(catalog, source);
+        // The same data read in TSBS's native wide schema: a column per metric, one scan for all of them.
+        var wideSource = new DuckDbPointSource(new DuckDbSourceOptions("Data Source=:memory:", wide, EntityColumn: "host_id",
+            MetricColumns: Metrics.ToDictionary(m => m, m => m)), Host);
+        MeridianRuntime FreshWide() => MeridianRuntime.InMemory(catalog, wideSource);
 
         Console.WriteLine($"{manifest.Description}");
         Console.WriteLine($"{instances} random instances per query type (seed {seed}); medians below.");
@@ -161,6 +165,7 @@ public static class Tsbs
             var pool = Enumerable.Range(0, instances + 1).Select(_ => RandomInstance(type, rng, hostCount, span)).ToList();
 
             await CheckAgreement(type, pool[0], Fresh(), longRel);
+            await CheckAgreement(type, pool[0], FreshWide(), longRel);
 
             int i = 0;
             Instance Next() => pool[i++ % pool.Count];
@@ -175,6 +180,10 @@ public static class Tsbs
             results.Add(await Runner.Measure($"{type.Name}/meridian-cold", $"{type.Name} · Meridian cold",
                 $"{type.Description}. Empty cache; bucketing pushed down, cross-host merge in the engine.",
                 instances, () => MeridianAsync(type, Next(), Fresh())));
+            i = 0;
+            results.Add(await Runner.Measure($"{type.Name}/meridian-cold-wide", $"{type.Name} · Meridian cold (wide schema)",
+                $"{type.Description}. Empty cache, reading TSBS's wide schema directly: every metric from one scan.",
+                instances, () => MeridianAsync(type, Next(), FreshWide())));
 
             // Warm: each instance on its own runtime, primed once, then timed.
             var primed = new Dictionary<Instance, MeridianRuntime>();

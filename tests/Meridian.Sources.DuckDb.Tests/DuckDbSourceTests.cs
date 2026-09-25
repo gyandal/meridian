@@ -52,6 +52,16 @@ public sealed class DuckDbFixture : IDisposable
             FROM range(1, 4) AS e(entity_id), range(0, 120) AS d(d)
             WHERE hash(e.entity_id * 31 + d.d) % 6 <> 0;
 
+            -- The same readings in the wide layout (a column per metric), with extra NULLs in hr; and that wide
+            -- table unpivoted back to the long layout, NULLs kept, as the reference it must match.
+            CREATE TABLE wide AS
+            SELECT entity_id, ts,
+                   max(value) FILTER (WHERE metric = 'load') AS load,
+                   CASE WHEN hash(entity_id * 131 + epoch(ts)) % 5 = 0 THEN NULL
+                        ELSE max(value) FILTER (WHERE metric = 'hr') END AS hr
+            FROM datapoints GROUP BY entity_id, ts;
+            CREATE VIEW wide_as_long AS SELECT * FROM wide UNPIVOT INCLUDE NULLS (value FOR metric IN (load, hr));
+
             CREATE TABLE typed (entity_id INTEGER, metric VARCHAR, ts TIMESTAMP, value DECIMAL(10, 2));
             INSERT INTO typed VALUES (1, 'typed', TIMESTAMP '2025-02-01 10:00', 12.50), (1, 'typed', TIMESTAMP '2025-02-02 10:00', 7.25);
 
@@ -443,6 +453,52 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         var views = await MeridianRuntime.InMemory(Catalog, new RawOnly(Source())).Engine.RunManyAsync(specs, ProjectionOptions.Default);
         var batched = await MeridianRuntime.InMemory(Catalog, Source()).Engine.RunManyAsync(specs, ProjectionOptions.Default);
         for (int i = 0; i < specs.Length; i++) AssertSameView(views[i], batched[i]);
+    }
+
+    private DuckDbPointSource Wide() => new(new DuckDbSourceOptions(db.ConnectionString, Relation: "wide",
+        MetricColumns: new Dictionary<string, string> { ["load"] = "load", ["hr"] = "hr" }), Athlete);
+
+    public static TheoryData<string, string, string> WideCases()
+    {
+        var data = new TheoryData<string, string, string>();
+        foreach (var zone in new[] { "UTC", "Europe/London" })
+        foreach (var period in new[] { "raw", "hour", "day", "week", "month" })
+        foreach (var agg in new[] { "mean", "sum", "min", "max", "count", "median", "last" })
+        {
+            if (period == "raw" && agg != "mean") continue; // raw rows have no aggregator
+            data.Add(zone, period, agg);
+        }
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(WideCases))]
+    public async Task A_wide_table_gives_the_same_reports_as_its_long_equivalent(string zone, string period, string aggregator)
+    {
+        Assert.True(Aggregators.TryResolve(aggregator, out var agg));
+        PipelineSpec For(MetricDefinition m) => PipelineSpec.Create("test", m.Id,
+            [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2), new EntityRef(Athlete, 3)], Timeframe,
+            new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete),
+            period == "raw" ? [] : [Transform.Resample(PeriodNamed(period), agg, GapPolicy.LeaveMissing)]);
+        PipelineSpec[] specs = [For(LoadDef), For(HrDef)];
+
+        var counting = new CountingSource(Wide());
+        var wide = await MeridianRuntime.InMemory(Catalog, counting).Engine.RunManyAsync(specs, In(zone));
+        var longForm = await MeridianRuntime.InMemory(Catalog, Source("wide_as_long")).Engine.RunManyAsync(specs, In(zone));
+
+        var batch = Assert.Single(counting.Batches); // both metrics from one scan of the wide table
+        Assert.Equal(["hr", "load"], batch.Metrics);
+        for (int i = 0; i < specs.Length; i++) AssertSameView(longForm[i], wide[i]);
+    }
+
+    [Fact]
+    public async Task A_wide_source_explains_a_metric_it_has_no_column_for()
+    {
+        var wide = Wide();
+        Assert.False(wide.CanRollup(WellnessDef, new SourceRollup(Period.Day, Aggregators.Mean, CalendarContext.Default)));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => wide.FetchAsync(WellnessDef, [new EntityRef(Athlete, 1)], Timeframe));
+        Assert.Contains("MetricColumns", error.Message);
     }
 
     [Fact]
