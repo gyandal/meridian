@@ -52,13 +52,8 @@ public static class ReportRequestMapper
         var transforms = new List<ITransform>();
 
         // --- filtering (runs first) ---
-        if (request.FilterMin is { } min) transforms.Add(Transform.Filter(p => p.Measure.IsPresent && p.Measure.Value >= min));
-        if (request.FilterMax is { } max) transforms.Add(Transform.Filter(p => p.Measure.IsPresent && p.Measure.Value <= max));
-        if (request.CategoryDim is { } cd && request.CategoryValue is { } cv)
-        {
-            var catDim = Dim(cd);
-            transforms.Add(Transform.Filter(p => p.Key.TryGet(catDim, out var part) && part.Text == cv));
-        }
+        if (request.FilterMin is not null || request.FilterMax is not null) transforms.Add(Transform.WhereValue(request.FilterMin, request.FilterMax));
+        if (request.CategoryDim is { } cd && request.CategoryValue is { } cv) transforms.Add(Transform.WhereIn(Dim(cd), cv));
 
         ViewSpec view;
 

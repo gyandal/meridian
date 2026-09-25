@@ -14,15 +14,14 @@ cases are welcome as issues.
 - Engine: aggregation pushdown, multi-metric batching (`RunManyAsync`)
 - Dimensions (slice a metric by venue, competition…; declarative `GroupBy` / `Total`), derived metrics
   (ratio of totals, e.g. goals per 90), multi-series charts with a second value axis, and dashboards
-  (shared context, focus on one entity, stored as JSON definitions)
+  (shared context, focus on one entity, stored as JSON definitions), declarative filters (by key and by
+  value)
 - Sources: DuckDB (tables and Parquet in place, long or wide layout), MySQL
 - Hosts: REST API with a dashboard, an agent (MCP-style) tool surface
 - Benchmarks: synthetic to 1B rows, NYC taxi, TSBS ([BENCHMARKS.md](docs/BENCHMARKS.md))
 
 ## Next
 
-- **Declarative filters** — value ranges and category filters in dashboard definitions (today, filters
-  are code and can't be stored).
 - **More formulas** — difference, sum and product of metrics, and percentages of a total.
 
 - **More sources** — PostgreSQL / TimescaleDB, SQL Server, ClickHouse; each with pushdown where exact.

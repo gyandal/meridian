@@ -774,6 +774,50 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.Contains("can't", Assert.Throws<ArgumentException>(() => new InMemoryMetricCatalog([AppGoals, AppMinutes, bySky])).Message);
     }
 
+    [Fact]
+    public async Task Home_goals_per_90_filters_by_key_and_still_pushes_down()
+    {
+        // The filter comes first, as a user would write it; the engine buckets in SQL, then filters the buckets.
+        var report = AppReport(GoalsPer90.Id, new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete),
+            Transform.WhereIn(Venue, "Home"), Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing))
+            .WithDimensions(Venue);
+
+        var counting = new CountingSource(AppSource());
+        var viaSql = await MeridianRuntime.InMemory(AppCatalog, counting).Engine.RunAsync(report, ProjectionOptions.Default);
+        var inEngine = await MeridianRuntime.InMemory(AppCatalog, new RawOnly(AppSource())).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        Assert.True(Assert.Single(counting.Batches).Rollup);
+        AssertSameView(inEngine, viaSql);
+        var march = viaSql.Series.Single(s => s.Name == "athlete 1").Marks.Single(m => m.Label == "2025-03");
+        Assert.Equal(SqlRatio("entity_id = 1 AND venue = 'Home' AND ts >= TIMESTAMP '2025-03-01' AND ts < TIMESTAMP '2025-04-01'"), march.Value!.Value, 9);
+    }
+
+    [Fact]
+    public async Task A_filter_on_a_dimension_the_report_folds_away_is_an_error()
+    {
+        // Without WithDimensions(Venue) the venue is folded before the filter could see it: every point would be dropped.
+        var report = AppReport(AppGoals.Id, new ViewSpec(ChartKind.Line, AxisSource.Time), Transform.WhereIn(Venue, "Home"));
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(report, ProjectionOptions.Default));
+        Assert.Contains("WithDimensions", error.Message);
+    }
+
+    [Fact]
+    public async Task A_value_filter_before_a_ratio_is_aggregated_is_an_error()
+    {
+        // "Matches with at least 45 minutes" would filter goals and minutes by their own values — not what it says.
+        var report = AppReport(GoalsPer90.Id, new ViewSpec(ChartKind.Line, AxisSource.Time),
+            Transform.WhereValue(min: 45), Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing));
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(report, ProjectionOptions.Default));
+        Assert.Contains("after the last aggregation", error.Message);
+
+        var afterwards = AppReport(GoalsPer90.Id, new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing), Transform.WhereValue(min: 0.5));
+        var view = await MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(afterwards, ProjectionOptions.Default);
+        Assert.All(view.Series.SelectMany(x => x.Marks), m => Assert.True(m.Value >= 0.5));
+    }
+
     private static PipelineSpec Monthly(MetricDefinition metric, ChartKind kind, params long[] athletes) => PipelineSpec.Create(
         "club", metric.Id, [.. (athletes.Length == 0 ? [1L] : athletes).Select(a => new EntityRef(Athlete, a))], FirstHalf,
         new ViewSpec(kind, AxisSource.Time, SeriesBy: athletes.Length > 1 ? Athlete : null),
@@ -839,6 +883,11 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
             { "title": "Goals by venue",
               "series": [ { "metric": "goals", "dimensions": ["venue"], "view": { "kind": "column", "x": "venue" },
                             "transforms": [ { "kind": "total", "aggregator": "sum", "by": ["venue"] } ] } ] },
+            { "title": "Home goals per 90 by player, where it's at least 2",
+              "series": [ { "metric": "goals-per-90", "dimensions": ["venue"], "view": { "kind": "column", "x": "athlete" },
+                            "transforms": [ { "kind": "where", "dimension": "venue", "in": ["Home"] },
+                                            { "kind": "total", "aggregator": "sum", "by": ["athlete"] },
+                                            { "kind": "range", "min": 2 } ] } ] },
             { "title": "Goals per 90 by player",
               "series": [ { "metric": "goals-per-90", "view": { "kind": "column", "x": "athlete" },
                             "transforms": [ { "kind": "total", "aggregator": "sum", "by": ["athlete"] } ] } ] }
@@ -860,7 +909,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         // Monthly rollups of goals + minutes (one batch) and raw goals + minutes for the totals (one batch).
         Assert.Equal(2, counting.Batches.Count);
         Assert.Equal(0, counting.Raws + counting.Rollups);
-        Assert.Equal(["Goals, minutes and goals per 90", "Goals by venue", "Goals per 90 by player"], squad.Charts.Select(c => c.Title));
+        Assert.Equal(["Goals, minutes and goals per 90", "Goals by venue", "Home goals per 90 by player, where it's at least 2", "Goals per 90 by player"], squad.Charts.Select(c => c.Title));
         Assert.Equal(["Goals", "Minutes", "Goals per 90"], squad.Charts[0].View.Series.Select(s => s.Name));
 
         // Focus on athlete 2: the same dashboard, a narrower context — served entirely from cache.
@@ -868,9 +917,18 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.Equal(2, counting.Batches.Count);
         Assert.Equal(0, counting.Raws + counting.Rollups);
 
-        var squadRate = squad.Charts[2].View.Series[0].Marks.Single(m => m.Label == "2").Value;
-        Assert.Equal(squadRate, Assert.Single(focused.Charts[2].View.Series[0].Marks).Value);
-        Assert.Equal(SqlRatio("entity_id = 2 AND ts < TIMESTAMP '2025-07-01'"), focused.Charts[2].View.Series[0].Marks[0].Value!.Value, 9);
+        var squadRate = squad.Charts[3].View.Series[0].Marks.Single(m => m.Label == "2").Value;
+        Assert.Equal(squadRate, Assert.Single(focused.Charts[3].View.Series[0].Marks).Value);
+        Assert.Equal(SqlRatio("entity_id = 2 AND ts < TIMESTAMP '2025-07-01'"), focused.Charts[3].View.Series[0].Marks[0].Value!.Value, 9);
+
+        // Home only, and only players at 2 or better — each bar equal to SQL over home matches.
+        Assert.Equal(["1", "3"], squad.Charts[2].View.Series[0].Marks.Select(m => m.Label)); // player 2 (1.4) is below the range
+        foreach (var mark in squad.Charts[2].View.Series[0].Marks)
+        {
+            var home = SqlRatio($"entity_id = {mark.Label} AND venue = 'Home' AND ts < TIMESTAMP '2025-07-01'");
+            Assert.True(home >= 2);
+            Assert.Equal(home, mark.Value!.Value, 9);
+        }
     }
 
     [Fact]
@@ -878,7 +936,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     {
         var definition = DashboardDefinition.Parse(SquadJson);
         Assert.Equal(definition.ToJson(), DashboardDefinition.Parse(definition.ToJson()).ToJson());
-        Assert.Equal(3, definition.ToDashboard().Charts.Count);
+        Assert.Equal(4, definition.ToDashboard().Charts.Count);
     }
 
     [Theory]
@@ -887,6 +945,9 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"resample","period":"fortnight","aggregator":"sum"}]}]}]}""", "charts[0].series[0].transforms[0].period")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"resample","period":"7m","aggregator":"sum"}]}]}]}""", "charts[0].series[0].transforms[0].period")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","axis":"left"}]}]}""", "charts[0].series[0].axis")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"where","in":["Home"]}]}]}]}""", "charts[0].series[0].transforms[0].dimension")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"where","dimension":"venue","in":["Home"],"notIn":["Away"]}]}]}]}""", "charts[0].series[0].transforms[0]")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"range"}]}]}]}""", "charts[0].series[0].transforms[0]")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","view":{"kind":"donut"}}]}]}""", "charts[0].series[0].view.kind")]
     public void A_bad_definition_says_exactly_where_the_problem_is(string json, string path)
     {

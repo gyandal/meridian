@@ -46,6 +46,20 @@ public static class Transform
     public static ITransform Total(IAggregator aggregator, params DimensionId[] by) =>
         new GroupByTransform(aggregator, by, keepTime: false);
 
+    /// <summary>Keep points whose <paramref name="dimension"/> is one of <paramref name="values"/> — e.g. home
+    /// matches only. Entity ids match their number ("7"). Declarative, so it caches and can be stored.</summary>
+    public static ITransform WhereIn(DimensionId dimension, params string[] values) =>
+        new KeyFilterTransform(dimension, values, exclude: false);
+
+    /// <summary>Drop points whose <paramref name="dimension"/> is one of <paramref name="values"/>.</summary>
+    public static ITransform WhereNotIn(DimensionId dimension, params string[] values) =>
+        new KeyFilterTransform(dimension, values, exclude: true);
+
+    /// <summary>Keep points whose value is within [<paramref name="min"/>, <paramref name="max"/>] (either bound
+    /// optional). Missing values have no value to compare, so they're dropped. It filters whatever it's given
+    /// — raw readings before a resample, bucket totals after one.</summary>
+    public static ITransform WhereValue(double? min = null, double? max = null) => new ValueFilterTransform(min, max);
+
     /// <summary>
     /// Gives a transform built from a lambda (Filter, Map, Rekey…) a stable name, so results that use it can
     /// be cached. The name is a promise: the same name must always mean the same behaviour.
@@ -59,8 +73,10 @@ public static class Transform
 /// colours) doesn't depend on the order rows arrived in — cache, pushdown or raw fetch. A group with no
 /// present values is missing.
 /// </summary>
-internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by, bool keepTime) : IAggregatingTransform, ICacheIdentity
+internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by, bool keepTime) : IAggregatingTransform, IDimensionalTransform, ICacheIdentity
 {
+    public IReadOnlyCollection<DimensionId> Dimensions => by;
+
     public IAggregator Aggregator => aggregator;
 
     public ITransform WithAggregator(IAggregator other) => new GroupByTransform(other, by, keepTime);
@@ -97,6 +113,48 @@ internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by,
             output.Add(group.Key, measure, group.At == PointBlock.NoAt ? null : new Instant(group.At));
         }
         return output.Build();
+    }
+}
+
+internal sealed class KeyFilterTransform(DimensionId dimension, string[] values, bool exclude) : IKeyFilter, ICacheIdentity
+{
+    private readonly HashSet<string> _values = new(values, StringComparer.Ordinal);
+
+    public IReadOnlyCollection<DimensionId> Dimensions => [dimension];
+
+    public string CacheIdentity =>
+        $"{(exclude ? "wherenotin" : "wherein")}({dimension.Name};{string.Join(",", _values.Order(StringComparer.Ordinal).Select(Uri.EscapeDataString))})"; // escaped: "a,b" ≠ "a", "b"
+
+    public PointBlock Apply(PointBlock input, TransformContext ctx)
+    {
+        var builder = PointBlock.Builder.Like(input);
+        for (int i = 0; i < input.Count; i++)
+        {
+            bool match = input.Keys[i].TryGet(dimension, out var part) && _values.Contains(Text(part));
+            if (match != exclude) builder.Add(input.Row(i));
+        }
+        return builder.Build();
+    }
+
+    private static string Text(KeyPart part) => part.Kind == KeyPartKind.Category
+        ? part.Text
+        : part.Numeric.ToString(System.Globalization.CultureInfo.InvariantCulture);
+}
+
+internal sealed class ValueFilterTransform(double? min, double? max) : IValueFilter, ICacheIdentity
+{
+    public string CacheIdentity => FormattableString.Invariant($"wherevalue({min},{max})");
+
+    public PointBlock Apply(PointBlock input, TransformContext ctx)
+    {
+        var builder = PointBlock.Builder.Like(input);
+        for (int i = 0; i < input.Count; i++)
+        {
+            if ((input.Flags[i] & MeasureFlags.Missing) != 0) continue;
+            double v = input.Values[i];
+            if ((min is null || v >= min) && (max is null || v <= max)) builder.Add(input.Row(i));
+        }
+        return builder.Build();
     }
 }
 

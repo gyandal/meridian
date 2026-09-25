@@ -106,3 +106,54 @@ public class GroupByTests
                         ((ICacheIdentity)Transform.GroupBy(Aggregators.Sum, Venue)).CacheIdentity);
     }
 }
+
+public class FilterTests
+{
+    private static readonly DimensionId Player = new("player");
+    private static readonly DimensionId Venue = new("venue");
+    private static readonly Instant Monday = Instant.FromUtc(new DateTime(2026, 7, 6, 0, 0, 0, DateTimeKind.Utc));
+
+    private static PointBlock Goals() => PointBlock.FromRows(
+    [
+        new Point(PointKey.Of(KeyPart.Entity(Player, 1), KeyPart.Category(Venue, "Home")), 2, Monday),
+        new Point(PointKey.Of(KeyPart.Entity(Player, 1), KeyPart.Category(Venue, "Away")), 1, Monday),
+        new Point(PointKey.Of(KeyPart.Entity(Player, 2), KeyPart.Category(Venue, "Home")), 5, Monday),
+        new Point(PointKey.Of(KeyPart.Entity(Player, 3), KeyPart.Category(Venue, "Neutral")), Measurement.Missing, Monday, Unit.None),
+        new Point(PointKey.Of(KeyPart.Entity(Player, 3)), 4, Monday), // no venue recorded
+    ]);
+
+    private static double[] Values(ITransform filter) => filter.Apply(Goals(), TransformContext.Default).Values.ToArray();
+
+    [Fact]
+    public void WhereIn_keeps_points_whose_key_matches()
+    {
+        Assert.Equal([2.0, 5.0], Values(Transform.WhereIn(Venue, "Home")));
+        Assert.Equal([2.0, 1.0], Values(Transform.WhereIn(Player, "1")));   // entity parts match by id
+        Assert.Equal([2.0, 1.0, 5.0], Values(Transform.WhereIn(Venue, "Home", "Away")));
+    }
+
+    [Fact]
+    public void WhereNotIn_keeps_points_without_the_dimension()
+    {
+        var kept = Transform.WhereNotIn(Venue, "Home").Apply(Goals(), TransformContext.Default);
+        Assert.Equal(3, kept.Count); // Away, Neutral (missing value — not a value filter) and the unrecorded venue
+    }
+
+    [Fact]
+    public void WhereValue_bounds_are_inclusive_and_drop_missing_values()
+    {
+        Assert.Equal([2.0, 5.0, 4.0], Values(Transform.WhereValue(min: 2)));
+        Assert.Equal([2.0, 1.0], Values(Transform.WhereValue(max: 2)));
+        Assert.Equal([2.0, 4.0], Values(Transform.WhereValue(2, 4)));
+    }
+
+    [Fact]
+    public void Filters_have_stable_identities()
+    {
+        static string Id(ITransform t) => ((ICacheIdentity)t).CacheIdentity;
+        Assert.Equal(Id(Transform.WhereIn(Venue, "Home", "Away")), Id(Transform.WhereIn(Venue, "Away", "Home")));
+        Assert.NotEqual(Id(Transform.WhereIn(Venue, "Home")), Id(Transform.WhereNotIn(Venue, "Home")));
+        Assert.NotEqual(Id(Transform.WhereIn(Venue, "Home,Away")), Id(Transform.WhereIn(Venue, "Home", "Away")));
+        Assert.NotEqual(Id(Transform.WhereValue(min: 1)), Id(Transform.WhereValue(max: 1)));
+    }
+}
