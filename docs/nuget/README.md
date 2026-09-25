@@ -47,7 +47,8 @@ Console.WriteLine(ChartViewJson.Serialize(chart));
 - **Time done right** — readings bucketed in the report's time zone (DST included); calendar dates never
   shift; legacy wall-clock columns read with explicit DST rules.
 - **Fast on your existing data** — bucketing pushed down into the database when exact; multiple metrics
-  in one query; repeats from cache in microseconds.
+  in one query, from long (row per value) or wide (column per metric) tables; repeats from cache in
+  microseconds.
 - **Safe caching** — per-entity slices, finished-view caching, write-driven invalidation with versioned keys.
 - **Chart-agnostic output** — plain JSON series and axes for any charting library, API or agent.
 

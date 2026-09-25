@@ -117,11 +117,10 @@ Measured on a 6-core desktop; full method, tables and reproduction steps in [doc
 |---|---:|---:|---:|
 | Weekly report, 25 entities, **1.03 billion rows** of Parquet | 91 ms | 78 ms | 0.01 ms |
 | Weekly trips per zone in New York time, **47.5M real NYC taxi trips** | 717 ms | 735 ms | 0.01 ms |
-| TSBS `cpu-max-all-8` (10 metrics, 8 hosts), **259M values** | 74 ms¹ | 75 ms | 0.03 ms |
-| TSBS `double-groupby-all` (130,000-point result) | 1,258 ms¹ | 1,664 ms | 2.4 ms |
+| TSBS `cpu-max-all-8` (10 metrics, 8 hosts), **259M values** | 27 ms | 33 ms | 0.03 ms |
+| TSBS `double-groupby-all` (130,000-point result) | 262 ms | 552 ms | 2.35 ms |
 
-¹ SQL over the same long layout Meridian reads. TSBS's native wide schema (a column per metric) is
-faster for multi-metric queries; a wide-table source is on the roadmap.
+TSBS rows read TSBS's native wide schema (a column per metric) on both sides.
 
 The dashboard (`dotnet run --project src/Meridian.Hosts.Http` → http://localhost:5731) charts every
 committed benchmark run, with history.
@@ -147,8 +146,8 @@ committed benchmark run, with history.
 
 ## Roadmap
 
-In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: wide-table and PostgreSQL /
-SQL Server / ClickHouse sources, year-on-year and season-aligned comparisons, more aggregators
+In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: PostgreSQL / SQL Server /
+ClickHouse sources, year-on-year and season-aligned comparisons, more aggregators
 (percentiles, standard deviation), a Redis cache backend and an MCP server. Later: forecasting and
 scenario modelling. See [ROADMAP.md](ROADMAP.md).
 

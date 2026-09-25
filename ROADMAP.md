@@ -12,14 +12,12 @@ cases are welcome as issues.
 - Caching: per-entity slices with partial hits, batched loads, version and tag invalidation, and a
   finished-view cache
 - Engine: aggregation pushdown, multi-metric batching (`RunManyAsync`)
-- Sources: DuckDB (tables and Parquet in place), MySQL
+- Sources: DuckDB (tables and Parquet in place, long or wide layout), MySQL
 - Hosts: REST API with a dashboard, an agent (MCP-style) tool surface
 - Benchmarks: synthetic to 1B rows, NYC taxi, TSBS ([BENCHMARKS.md](docs/BENCHMARKS.md))
 
 ## Next
 
-- **Wide-table sources** — read a row with a column per metric (TSBS-style schemas) without unpivoting,
-  closing the remaining gap on multi-metric queries.
 - **More sources** — PostgreSQL / TimescaleDB, SQL Server, ClickHouse; each with pushdown where exact.
 - **Comparisons over time** — year-on-year and season-phase-aligned comparison ("round 5 this season vs
   last"), period-over-period change, index-to-baseline.
@@ -36,7 +34,8 @@ cases are welcome as issues.
   the same view and compare machinery.
 - **Per-event local day** — bucket by the local date where each event happened (entities that travel
   across zones), via a stored offset.
-- **Performance** — a columnar/SIMD pass over resample and rolling windows; allocation-free hot paths.
+- **Performance** — a columnar/SIMD pass over resample and rolling windows; allocation-free hot paths;
+  cheaper projection for very large results.
 - **Clients** — an OpenAPI description of the REST host and generated Python / TypeScript clients.
 - **Comparative benchmarks** — the same metrics in Meridian and in semantic-layer tools (e.g. Cube),
   published with scripts.

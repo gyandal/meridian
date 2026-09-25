@@ -3,6 +3,15 @@
 All notable changes to Meridian. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
+## [Unreleased]
+
+### Added
+- DuckDB source reads **wide tables** — one row per (entity, time), a column per metric — via
+  `DuckDbSourceOptions.MetricColumns`. A multi-metric fetch or rollup is a single scan; NULL columns are
+  missing values, exactly as in the long layout (parity tests compare the two).
+- TSBS benchmark reads TSBS's native wide schema too: 10-metric queries cold drop from 79 ms (long) to
+  33 ms, and `double-groupby-all` from 1,617 ms to 552 ms.
+
 ## [0.1.0-preview.2] — 2026-09-25
 
 ### Added

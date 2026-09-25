@@ -28,7 +28,7 @@ entities, timeframe, transforms, view.
 | `Meridian.Views` | `ChartView` (series → marks, typed axes, legend, annotations), `ViewSpec`, themes, label resolvers, status rules, `ChartProjector` |
 | `Meridian.Views.Json` | the source-generated JSON wire contract for `ChartView` |
 | `Meridian.Engine` | `PipelineSpec`, `ReportEngine` (`RunAsync`, `RunManyAsync`), `IPointSource` / `IRollupPointSource` / `IBatchPointSource`, `ViewCache`, `MeridianRuntime` wiring |
-| `Meridian.Sources.DuckDb` | DuckDB tables or Parquet in place, with pushdown and batching |
+| `Meridian.Sources.DuckDb` | DuckDB tables or Parquet in place — long (row per value) or wide (column per metric) — with pushdown and batching |
 | `Meridian.Sources.MySql` | a MySQL datapoints table |
 | `Meridian.Hosts.Mcp` | agent tools: `describe` the catalog, `query` a bounded typed report |
 | `Meridian.Hosts.Http` (sample host) | minimal REST API and the dashboard |
