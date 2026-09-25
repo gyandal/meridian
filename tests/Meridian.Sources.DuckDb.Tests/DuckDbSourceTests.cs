@@ -824,6 +824,76 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.Equal("Per 90 · athlete 1", views[1].Series[0].Name);
     }
 
+    private const string SquadJson = """
+        {
+          "title": "Squad",
+          "charts": [
+            { "title": "Goals, minutes and goals per 90",
+              "series": [
+                { "metric": "goals", "view": { "kind": "column" },
+                  "transforms": [ { "kind": "resample", "period": "month", "aggregator": "sum" }, { "kind": "groupBy", "aggregator": "sum" } ] },
+                { "metric": "minutes", "axis": "secondary",
+                  "transforms": [ { "kind": "resample", "period": "month", "aggregator": "sum" }, { "kind": "groupBy", "aggregator": "sum" } ] },
+                { "metric": "goals-per-90",
+                  "transforms": [ { "kind": "resample", "period": "month", "aggregator": "sum" }, { "kind": "groupBy", "aggregator": "sum" } ] } ] },
+            { "title": "Goals by venue",
+              "series": [ { "metric": "goals", "dimensions": ["venue"], "view": { "kind": "column", "x": "venue" },
+                            "transforms": [ { "kind": "total", "aggregator": "sum", "by": ["venue"] } ] } ] },
+            { "title": "Goals per 90 by player",
+              "series": [ { "metric": "goals-per-90", "view": { "kind": "column", "x": "athlete" },
+                            "transforms": [ { "kind": "total", "aggregator": "sum", "by": ["athlete"] } ] } ] }
+          ]
+        }
+        """;
+
+    private static DashboardContext Squad => new("club", [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2), new EntityRef(Athlete, 3)], FirstHalf);
+
+    [Fact]
+    public async Task A_dashboard_costs_one_query_per_data_shape_and_focusing_costs_none()
+    {
+        var dashboard = DashboardDefinition.Parse(SquadJson).ToDashboard();
+        var counting = new CountingSource(AppSource());
+        var engine = MeridianRuntime.InMemory(AppCatalog, counting).Engine;
+
+        var squad = await engine.RunDashboardAsync(dashboard, Squad, ProjectionOptions.Default);
+
+        // Monthly rollups of goals + minutes (one batch) and raw goals + minutes for the totals (one batch).
+        Assert.Equal(2, counting.Batches.Count);
+        Assert.Equal(0, counting.Raws + counting.Rollups);
+        Assert.Equal(["Goals, minutes and goals per 90", "Goals by venue", "Goals per 90 by player"], squad.Charts.Select(c => c.Title));
+        Assert.Equal(["Goals", "Minutes", "Goals per 90"], squad.Charts[0].View.Series.Select(s => s.Name));
+
+        // Focus on athlete 2: the same dashboard, a narrower context — served entirely from cache.
+        var focused = await engine.RunDashboardAsync(dashboard, Squad.Focus(new EntityRef(Athlete, 2)), ProjectionOptions.Default);
+        Assert.Equal(2, counting.Batches.Count);
+        Assert.Equal(0, counting.Raws + counting.Rollups);
+
+        var squadRate = squad.Charts[2].View.Series[0].Marks.Single(m => m.Label == "2").Value;
+        Assert.Equal(squadRate, Assert.Single(focused.Charts[2].View.Series[0].Marks).Value);
+        Assert.Equal(SqlRatio("entity_id = 2 AND ts < TIMESTAMP '2025-07-01'"), focused.Charts[2].View.Series[0].Marks[0].Value!.Value, 9);
+    }
+
+    [Fact]
+    public void A_dashboard_definition_round_trips_as_json()
+    {
+        var definition = DashboardDefinition.Parse(SquadJson);
+        Assert.Equal(definition.ToJson(), DashboardDefinition.Parse(definition.ToJson()).ToJson());
+        Assert.Equal(3, definition.ToDashboard().Charts.Count);
+    }
+
+    [Theory]
+    [InlineData("""{"title":"x","charts":[]}""", "charts")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"smooth"}]}]}]}""", "charts[0].series[0].transforms[0].kind")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"resample","period":"fortnight","aggregator":"sum"}]}]}]}""", "charts[0].series[0].transforms[0].period")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"resample","period":"7m","aggregator":"sum"}]}]}]}""", "charts[0].series[0].transforms[0].period")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","axis":"left"}]}]}""", "charts[0].series[0].axis")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","view":{"kind":"donut"}}]}]}""", "charts[0].series[0].view.kind")]
+    public void A_bad_definition_says_exactly_where_the_problem_is(string json, string path)
+    {
+        var error = Assert.Throws<DashboardDefinitionException>(() => DashboardDefinition.Parse(json).ToDashboard());
+        Assert.Equal(path, error.Path);
+    }
+
     [Fact]
     public async Task Decimal_values_and_integer_ids_are_read_on_both_paths()
     {

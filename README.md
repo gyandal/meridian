@@ -40,6 +40,8 @@ var chart = await meridian.Engine.RunAsync(
 - **Derived metrics, computed correctly.** Define goals per 90 once, as goals ÷ minutes × 90; every chart
   divides *totals* for each bucket and group (never averages per-match ratios), treats no goals as zero,
   and fetches both inputs in one query.
+- **Dashboards as data.** A dashboard is JSON a product can store and let users edit; charts share one
+  context (players, timeframe), load together, and focusing on one player is served from cache.
 - **One definition, every surface.** The same metric catalog drives charts, a REST API and a typed agent
   tool surface (describe the metrics, query a bounded report) — safer than letting an agent write SQL.
 - **Chart-agnostic output.** `ChartView` is plain JSON: series, marks, typed axes, server-side labels and

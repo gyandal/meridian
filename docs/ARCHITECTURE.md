@@ -111,6 +111,18 @@ kind (columns, line, area), series get distinct colours and names ("Goals", or "
 part has a series per entity), and each side gets one value axis built from its parts. Parts must share
 the x-axis. A dashboard runs all its charts through `RunChartsAsync` to share fetches across them.
 
+## Dashboards
+
+A `Dashboard` is a set of charts defined against a shared `DashboardContext` — tenant, entities,
+timeframe — rather than hard-coded ones. `RunDashboardAsync` runs every series of every chart together
+(shared fetches, batched queries); focusing on one player is the same dashboard with
+`context.Focus(player)`, and because data is cached per entity it needs no new queries.
+
+Products that let users build dashboards store them as a `DashboardDefinition`: plain JSON with
+declarative transforms (`resample`, `rolling`, `groupBy`, `total`), views (`kind`, `x`, `seriesBy`) and
+axes. `ToDashboard()` validates it and reports problems by JSON path (`charts[1].series[0].transforms[2].kind`),
+ready to show in an editor. Transforms that are code (a lambda `Filter`) can't be stored, by design.
+
 ## Caching and invalidation
 
 The store contract is small: a backend implements get/set/remove (`IKeyValueStore`), and the
