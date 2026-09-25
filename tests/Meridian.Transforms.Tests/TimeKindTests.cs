@@ -157,3 +157,41 @@ public class FilterTests
         Assert.NotEqual(Id(Transform.WhereValue(min: 1)), Id(Transform.WhereValue(max: 1)));
     }
 }
+
+public class ShareTests
+{
+    private static readonly DimensionId Player = new("player");
+    private static readonly DimensionId Venue = new("venue");
+    private static readonly Instant Week1 = Instant.FromUtc(new DateTime(2026, 7, 6, 0, 0, 0, DateTimeKind.Utc));
+    private static readonly Instant Week2 = Instant.FromUtc(new DateTime(2026, 7, 13, 0, 0, 0, DateTimeKind.Utc));
+
+    private static Point P(long player, string venue, double value, Instant at) =>
+        new(PointKey.Of(KeyPart.Entity(Player, player), KeyPart.Category(Venue, venue)), value, at);
+
+    [Fact]
+    public void A_share_is_of_the_points_at_the_same_time_that_differ_only_across_the_dimension()
+    {
+        var block = PointBlock.FromRows([P(1, "Home", 3, Week1), P(1, "Away", 1, Week1), P(2, "Home", 2, Week1), P(1, "Home", 5, Week2)]);
+        var shares = Transform.ShareOf(Venue).Apply(block, TransformContext.Default);
+
+        Assert.Equal([75.0, 25.0, 100.0, 100.0], shares.Values.ToArray()); // per player, per week
+        Assert.Equal("%", shares.Unit.Symbol);
+        Assert.Equal([60.0, 40.0], Transform.ShareOf(Player, Venue).Apply(
+            PointBlock.FromRows([P(1, "Home", 3, Week1), P(2, "Away", 2, Week1)]), TransformContext.Default).Values.ToArray());
+    }
+
+    [Fact]
+    public void Missing_values_are_skipped_and_a_zero_total_has_no_share()
+    {
+        var block = PointBlock.FromRows(
+        [
+            P(1, "Home", 4, Week1),
+            new Point(PointKey.Of(KeyPart.Entity(Player, 1), KeyPart.Category(Venue, "Away")), Measurement.Missing, Week1, Unit.None),
+            P(2, "Home", 0, Week1), P(2, "Away", 0, Week1),
+        ]);
+        var shares = Transform.ShareOf(Venue).Apply(block, TransformContext.Default);
+
+        Assert.Equal(100.0, shares.Values[0]);
+        Assert.All([1, 2, 3], i => Assert.Equal(MeasureFlags.Missing, shares.Flags[i] & MeasureFlags.Missing));
+    }
+}

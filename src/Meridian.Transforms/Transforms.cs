@@ -46,6 +46,15 @@ public static class Transform
     public static ITransform Total(IAggregator aggregator, params DimensionId[] by) =>
         new GroupByTransform(aggregator, by, keepTime: false);
 
+    /// <summary>
+    /// Each value as a percentage of the total it's part of: the sum over points at the same time whose keys
+    /// differ only in <paramref name="across"/>. After <c>Total(Sum, player)</c>, <c>ShareOf(player)</c> is each
+    /// player's share of the goals; after monthly <c>GroupBy(Sum, venue)</c>, <c>ShareOf(venue)</c> is the home
+    /// and away share of each month. The total is over the points the report has — its entities and filters —
+    /// so a report focused on one player is 100% of itself. Missing values are skipped; a zero total has no share.
+    /// </summary>
+    public static ITransform ShareOf(params DimensionId[] across) => new ShareTransform(across);
+
     /// <summary>Keep points whose <paramref name="dimension"/> is one of <paramref name="values"/> — e.g. home
     /// matches only. Entity ids match their number ("7"). Declarative, so it caches and can be stored.</summary>
     public static ITransform WhereIn(DimensionId dimension, params string[] values) =>
@@ -113,6 +122,42 @@ internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by,
             output.Add(group.Key, measure, group.At == PointBlock.NoAt ? null : new Instant(group.At));
         }
         return output.Build();
+    }
+}
+
+internal sealed class ShareTransform(DimensionId[] across) : IShareTransform, ICacheIdentity
+{
+    public IReadOnlyCollection<DimensionId> Dimensions => across;
+
+    public string CacheIdentity => $"shareof({string.Join(",", across.Select(d => d.Name).Order(StringComparer.Ordinal))})";
+
+    public PointBlock Apply(PointBlock input, TransformContext ctx)
+    {
+        var totals = new Dictionary<(PointKey, long), double>();
+        for (int i = 0; i < input.Count; i++)
+        {
+            if ((input.Flags[i] & MeasureFlags.Missing) != 0) continue;
+            var whole = (Whole(input.Keys[i]), input.AtTicks[i]);
+            totals[whole] = totals.GetValueOrDefault(whole) + input.Values[i];
+        }
+
+        var output = new PointBlock.Builder(new Unit("%"), input.Time);
+        for (int i = 0; i < input.Count; i++)
+        {
+            long at = input.AtTicks[i];
+            var total = totals.GetValueOrDefault((Whole(input.Keys[i]), at));
+            var share = (input.Flags[i] & MeasureFlags.Missing) != 0 || total == 0
+                ? Measurement.Missing
+                : Measurement.Of(100 * input.Values[i] / total);
+            output.Add(input.Keys[i], share, at == PointBlock.NoAt ? null : new Instant(at));
+        }
+        return output.Build();
+    }
+
+    private PointKey Whole(PointKey key)
+    {
+        foreach (var dimension in across) key = key.Without(dimension);
+        return key;
     }
 }
 

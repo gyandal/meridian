@@ -78,13 +78,16 @@ public sealed class DuckDbFixture : IDisposable
                 SELECT e.entity_id, TIMESTAMP '2025-01-04 15:00:00' + to_days(g.g * 7) AS ts,
                        CASE WHEN hash(e.entity_id * 17 + g.g) % 2 = 0 THEN 'Home' ELSE 'Away' END AS venue,
                        CAST(10 + hash(e.entity_id * 29 + g.g) % 81 AS DOUBLE) AS minutes,
-                       CAST(hash(e.entity_id * 31 + g.g) % 4 AS DOUBLE) - 1 AS goals
+                       CAST(hash(e.entity_id * 31 + g.g) % 4 AS DOUBLE) - 1 AS goals,
+                       CAST(hash(e.entity_id * 37 + g.g) % 3 AS DOUBLE) - 1 AS assists
                 FROM range(1, 4) AS e(entity_id), range(0, 22) AS g(g)
                 WHERE hash(e.entity_id * 7 + g.g) % 5 <> 0 AND NOT (e.entity_id = 3 AND g.g BETWEEN 9 AND 14)
             )
             SELECT entity_id, 'minutes' AS metric, ts, minutes AS value, venue FROM m
             UNION ALL
-            SELECT entity_id, 'goals', ts, goals, venue FROM m WHERE goals > 0;
+            SELECT entity_id, 'goals', ts, goals, venue FROM m WHERE goals > 0
+            UNION ALL
+            SELECT entity_id, 'assists', ts, assists, venue FROM m WHERE assists > 0;
 
             CREATE TABLE typed (entity_id INTEGER, metric VARCHAR, ts TIMESTAMP, value DECIMAL(10, 2));
             INSERT INTO typed VALUES (1, 'typed', TIMESTAMP '2025-02-01 10:00', 12.50), (1, 'typed', TIMESTAMP '2025-02-02 10:00', 7.25);
@@ -635,7 +638,15 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     private static readonly MetricDefinition AppMinutes = new(new MetricId("minutes"), "Minutes", new Unit("min"), "sum", [Athlete, Venue], TimeGrain.Instant);
     private static readonly MetricDefinition GoalsPer90 = MetricDefinition.Ratio(
         new MetricId("goals-per-90"), "Goals per 90", new Unit("/90"), AppGoals.Id, AppMinutes.Id, 90, [Athlete, Venue]);
-    private static readonly InMemoryMetricCatalog AppCatalog = new([AppGoals, AppMinutes, GoalsPer90]);
+    private static readonly MetricDefinition AppAssists = new(new MetricId("assists"), "Assists", new Unit(""), "sum", [Athlete, Venue], TimeGrain.Instant);
+    private static readonly MetricDefinition Involvements = MetricDefinition.Sum(
+        new MetricId("goal-involvements"), "Goal involvements", new Unit(""), [AppGoals.Id, AppAssists.Id], [Athlete, Venue]);
+    private static readonly MetricDefinition GoalsLessAssists = MetricDefinition.Difference(
+        new MetricId("goals-less-assists"), "Goals - assists", new Unit(""), AppGoals.Id, AppAssists.Id, [Athlete, Venue]);
+    private static readonly MetricDefinition GoalsLessAssistsBoth = MetricDefinition.Difference(
+        new MetricId("goals-less-assists-both"), "Goals - assists (both)", new Unit(""), AppGoals.Id, AppAssists.Id, [Athlete, Venue],
+        missing: MissingInput.NoValue);
+    private static readonly InMemoryMetricCatalog AppCatalog = new([AppGoals, AppMinutes, AppAssists, GoalsPer90, Involvements, GoalsLessAssists, GoalsLessAssistsBoth]);
     private static readonly DateInterval FirstHalf = new(Instant.FromUtc(new DateTime(2025, 1, 1)), Instant.FromUtc(new DateTime(2025, 7, 1)));
 
     private DuckDbPointSource AppSource() =>
@@ -818,6 +829,101 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.All(view.Series.SelectMany(x => x.Marks), m => Assert.True(m.Value >= 0.5));
     }
 
+    private long SqlSum(string metrics, string where) =>
+        db.Scalar($"SELECT CAST(coalesce(sum(value), 0) AS BIGINT) FROM apps WHERE metric IN ({metrics}) AND {where}");
+
+    [Fact]
+    public async Task Goal_involvements_add_totals_in_one_pushed_down_query()
+    {
+        var report = AppReport(Involvements.Id, new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Venue),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing), Transform.GroupBy(Aggregators.Sum, Venue))
+            .WithDimensions(Venue);
+
+        var counting = new CountingSource(AppSource());
+        var viaSql = await MeridianRuntime.InMemory(AppCatalog, counting).Engine.RunAsync(report, ProjectionOptions.Default);
+        var inEngine = await MeridianRuntime.InMemory(AppCatalog, new RawOnly(AppSource())).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        var batch = Assert.Single(counting.Batches);
+        Assert.Equal(["assists", "goals"], batch.Metrics.Order());
+        Assert.True(batch.Rollup);
+        AssertSameView(inEngine, viaSql);
+        foreach (var series in viaSql.Series)
+        {
+            foreach (var mark in series.Marks)
+            {
+                var month = DateTime.ParseExact(mark.Label, "yyyy-MM", System.Globalization.CultureInfo.InvariantCulture);
+                Assert.Equal(SqlSum("'goals', 'assists'", $"venue = '{series.Name}' AND ts >= TIMESTAMP '{month:yyyy-MM-dd}' AND ts < TIMESTAMP '{month.AddMonths(1):yyyy-MM-dd}'"),
+                    mark.Value!.Value);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task A_difference_treats_no_rows_as_zero_unless_it_needs_both()
+    {
+        // Per match (no aggregation): a match with an assist and no goal is 0 - 1, unless the formula needs both.
+        async Task<IReadOnlyList<double>> Values(MetricDefinition metric)
+        {
+            var view = await MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(
+                AppReport(metric.Id, new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete)), ProjectionOptions.Default);
+            return [.. view.Series.SelectMany(s => s.Marks).Select(m => m.Value!.Value)];
+        }
+
+        var either = await Values(GoalsLessAssists);
+        var both = await Values(GoalsLessAssistsBoth);
+        const string firstHalf = "ts < TIMESTAMP '2025-07-01'";
+        Assert.Equal(db.Scalar($"SELECT count(DISTINCT (entity_id, ts)) FROM apps WHERE metric IN ('goals', 'assists') AND {firstHalf}"), either.Count);
+        Assert.Equal(db.Scalar($"""
+            SELECT count(*) FROM apps g JOIN apps a ON a.entity_id = g.entity_id AND a.ts = g.ts
+            WHERE g.metric = 'goals' AND a.metric = 'assists' AND g.{firstHalf}
+            """), both.Count);
+        Assert.True(both.Count < either.Count);
+        Assert.Equal(SqlSum("'goals'", firstHalf) - SqlSum("'assists'", firstHalf), either.Sum());
+    }
+
+    [Fact]
+    public async Task Share_of_goals_by_player_adds_to_100_and_is_in_percent()
+    {
+        var report = AppReport(AppGoals.Id, new ViewSpec(ChartKind.Pie, AxisSource.Category(Athlete)),
+            Transform.Total(Aggregators.Sum, Athlete), Transform.ShareOf(Athlete));
+        var view = await MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        var shares = view.Series[0].Marks.ToDictionary(m => m.Label, m => m.Value!.Value);
+        Assert.Equal(100, shares.Values.Sum(), 9);
+        const string firstHalf = "ts < TIMESTAMP '2025-07-01'";
+        Assert.Equal(100.0 * SqlSum("'goals'", $"entity_id = 2 AND {firstHalf}") / SqlSum("'goals'", firstHalf), shares["2"], 9);
+        Assert.Equal("%", view.Axes[1].Unit);
+    }
+
+    [Fact]
+    public async Task Home_share_of_involvements_per_player_and_no_share_of_a_ratio()
+    {
+        // Shares of a linear formula are fine: per player, home + away = 100%.
+        var report = AppReport(Involvements.Id, new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete), SeriesBy: Venue),
+            Transform.Total(Aggregators.Sum, Athlete, Venue), Transform.ShareOf(Venue)).WithDimensions(Venue);
+        var view = await MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(report, ProjectionOptions.Default);
+        Assert.Equal(2, view.Series.Count);
+        foreach (var player in new[] { "1", "2", "3" })
+        {
+            Assert.Equal(100, view.Series.Sum(s => s.Marks.SingleOrDefault(m => m.Label == player)?.Value ?? 0), 9);
+        }
+
+        // Rates don't add, so a share of goals per 90 is refused rather than drawn.
+        var ofRatio = AppReport(GoalsPer90.Id, new ViewSpec(ChartKind.Pie, AxisSource.Category(Athlete)),
+            Transform.Total(Aggregators.Sum, Athlete), Transform.ShareOf(Athlete));
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(ofRatio, ProjectionOptions.Default));
+        Assert.Contains("don't add up", error.Message);
+    }
+
+    [Fact]
+    public void A_formula_uses_each_input_once()
+    {
+        var twice = MetricDefinition.Sum(new MetricId("double-goals"), "Double goals", Unit.None, [AppGoals.Id, AppGoals.Id], [Athlete]);
+        Assert.Contains("each used once", Assert.Throws<ArgumentException>(() => new InMemoryMetricCatalog([AppGoals, twice])).Message);
+        Assert.Equal(Involvements.Formula, MetricDefinition.Sum(Involvements.Id, "x", Unit.None, [AppGoals.Id, AppAssists.Id], [Athlete]).Formula);
+    }
+
     private static PipelineSpec Monthly(MetricDefinition metric, ChartKind kind, params long[] athletes) => PipelineSpec.Create(
         "club", metric.Id, [.. (athletes.Length == 0 ? [1L] : athletes).Select(a => new EntityRef(Athlete, a))], FirstHalf,
         new ViewSpec(kind, AxisSource.Time, SeriesBy: athletes.Length > 1 ? Athlete : null),
@@ -948,6 +1054,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"where","in":["Home"]}]}]}]}""", "charts[0].series[0].transforms[0].dimension")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"where","dimension":"venue","in":["Home"],"notIn":["Away"]}]}]}]}""", "charts[0].series[0].transforms[0]")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"range"}]}]}]}""", "charts[0].series[0].transforms[0]")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"share"}]}]}]}""", "charts[0].series[0].transforms[0].by")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","view":{"kind":"donut"}}]}]}""", "charts[0].series[0].view.kind")]
     public void A_bad_definition_says_exactly_where_the_problem_is(string json, string path)
     {

@@ -12,6 +12,14 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
   gain `where` (`dimension`, `in` / `notIn`) and `range` (`min`, `max`) transforms.
 - A key filter written before a resample still pushes down: the database buckets by the kept dimensions
   and the engine filters the buckets.
+- **Sums and differences of metrics**: `MetricDefinition.Sum` (goal involvements = goals + assists),
+  `Difference` and `Linear` (coefficients). Inputs are totalled per bucket, then combined — exact, batched
+  and pushed down. `MissingInput` chooses whether a missing input is 0 (events, the default) or leaves the
+  bucket without a value (readings). No product of metrics, by design: see ARCHITECTURE.md.
+- **Shares of a total**: `Transform.ShareOf(dimensions…)` — each value as a % of the total across those
+  dimensions (each player's share of goals; the home/away split per month). The axis unit becomes `%`.
+  A share of a ratio metric is an error. Dashboard definitions gain a `share` transform (`by`).
+- Demo: assists, goal involvements, and a share-of-involvements chart on the example dashboard.
 
 ### Changed
 - A report that filters or groups by a dimension it doesn't keep is now an error that says to declare it
@@ -20,6 +28,7 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
   its own values (minutes ≥ 45 would also drop goals), which isn't what it reads as.
 - The demo API's `filterMin` / `filterMax` / `categoryValue` use the declarative filters, so those
   reports now hit the view cache.
+- The catalog rejects a formula that uses the same input twice.
 
 ## [0.1.0-preview.3] — 2026-09-25
 

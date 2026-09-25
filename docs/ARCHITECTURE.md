@@ -22,7 +22,7 @@ entities, timeframe, transforms, view.
 |---|---|
 | `Meridian.Core` | `Instant`, typed composite keys (`PointKey`), `Measurement` (missing is a flag, never a null), the columnar `PointBlock` with its `TimeAxis`, aggregators, deterministic hashing |
 | `Meridian.Time` | `CalendarContext` (IANA zones via NodaTime, week start, seasons), periods (`Every`, `Hour`, `Day`, `Week`, `Month`, `Season`), `GapPolicy`, the `Resampler`, `StoredTime` and DST resolution |
-| `Meridian.Transforms` | `ITransform` (`PointBlock → PointBlock`) and the algebra: `Filter`, `WhereIn` / `WhereNotIn` / `WhereValue`, `Map`, `Rekey`, `Reduce`, `PerGroup`, `Resample`, `Rolling`, `Named`; `Binary.Combine`/`Compare` for two-input joins |
+| `Meridian.Transforms` | `ITransform` (`PointBlock → PointBlock`) and the algebra: `Filter`, `WhereIn` / `WhereNotIn` / `WhereValue`, `ShareOf`, `Map`, `Rekey`, `Reduce`, `PerGroup`, `Resample`, `Rolling`, `Named`; `Binary.Combine`/`Compare` for two-input joins |
 | `Meridian.Semantics` | `MetricDefinition` and `IMetricCatalog` |
 | `Meridian.Caching` | `IPointCacheStore` / `IKeyValueStore` backends, tag decorator, layering, `PointCache` (per-entity merge, batched loads, single-flight), version and tag invalidation |
 | `Meridian.Views` | `ChartView` (series → marks, typed axes, legend, annotations), `ViewSpec`, themes, label resolvers, status rules, `ChartProjector` |
@@ -112,8 +112,29 @@ used in any report like a stored metric. The rules that make it right:
   report, so goals and minutes arrive in one query and are shared with plain goals and minutes charts.
   A derived chart's cache entry depends on its inputs' data versions, so it's rebuilt when either changes.
 
-The catalog rejects bad definitions when it's built: unknown or derived inputs, mismatched time kinds, and
-dimensions an input can't be sliced by.
+The same rules hold for **sums and differences**: `MetricDefinition.Sum(goal-involvements, …, [goals,
+assists])`, `Difference(…)`, or `Linear(…)` with coefficients. Each input is totalled per bucket and the
+totals combined, which with sums is exact — and pushes down, since both inputs arrive in one query. By
+default a bucket with no rows for an input counts it as 0 (events: no assist rows is no assists) and has a
+value if any input does; `MissingInput.NoValue` needs every input instead (readings, where no row means
+"not measured").
+
+There is deliberately **no product** of metrics: revenue is Σ(price × quantity), not Σprice × Σquantity.
+A product has to be taken per row, so it belongs in the source — a column, or a view over the table.
+
+The catalog rejects bad definitions when it's built: unknown or derived inputs, an input used twice,
+mismatched time kinds, and dimensions an input can't be sliced by.
+
+### Shares of a total
+
+"Each player's share of the squad's goals" isn't a formula over two metrics — it's one metric divided by
+its own total — so it's a transform: `Transform.ShareOf(player)` after `Total(Sum, player)`. The total is
+over points at the same time whose keys differ only in the given dimensions, so `ShareOf(venue)` after a
+monthly `GroupBy(Sum, player, venue)` is each player's home/away split per month. Values are percentages
+and the axis unit becomes `%`. Two things to know:
+
+- The total is of what the report has: its entities and filters. Focused on one player, a share is 100%.
+- Rates don't add up, so a share of a ratio metric (goals per 90) is refused; take shares of its numerator.
 
 ## Multi-series charts
 
@@ -132,7 +153,7 @@ timeframe — rather than hard-coded ones. `RunDashboardAsync` runs every series
 `context.Focus(player)`, and because data is cached per entity it needs no new queries.
 
 Products that let users build dashboards store them as a `DashboardDefinition`: plain JSON with
-declarative transforms (`resample`, `rolling`, `groupBy`, `total`, `where`, `range`), views (`kind`, `x`, `seriesBy`) and
+declarative transforms (`resample`, `rolling`, `groupBy`, `total`, `where`, `range`, `share`), views (`kind`, `x`, `seriesBy`) and
 axes. `ToDashboard()` validates it and reports problems by JSON path (`charts[1].series[0].transforms[2].kind`),
 ready to show in an editor. Transforms that are code (a lambda `Filter`) can't be stored, by design.
 

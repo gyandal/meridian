@@ -15,14 +15,12 @@ cases are welcome as issues.
 - Dimensions (slice a metric by venue, competition…; declarative `GroupBy` / `Total`), derived metrics
   (ratio of totals, e.g. goals per 90), multi-series charts with a second value axis, and dashboards
   (shared context, focus on one entity, stored as JSON definitions), declarative filters (by key and by
-  value)
+  value), sums and differences of metrics, shares of a total
 - Sources: DuckDB (tables and Parquet in place, long or wide layout), MySQL
 - Hosts: REST API with a dashboard, an agent (MCP-style) tool surface
 - Benchmarks: synthetic to 1B rows, NYC taxi, TSBS ([BENCHMARKS.md](docs/BENCHMARKS.md))
 
 ## Next
-
-- **More formulas** — difference, sum and product of metrics, and percentages of a total.
 
 - **More sources** — PostgreSQL / TimescaleDB, SQL Server, ClickHouse; each with pushdown where exact.
 - **Comparisons over time** — year-on-year and season-phase-aligned comparison ("round 5 this season vs
