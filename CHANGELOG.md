@@ -6,6 +6,12 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 ## [Unreleased]
 
 ### Added
+- **Multi-series charts**: `ChartSpec` combines several reports into one chart — goals as columns,
+  minutes on a second axis, goals per 90 as a line. `ReportEngine.RunChartAsync` / `RunChartsAsync` run
+  every part of every chart together (shared fetches and batches); `ChartComposer` names, colours and
+  places the series. `SeriesView` gains optional `Kind` and `Axis` (omitted for single-report views).
+- Dashboard: renders per-series chart kinds and a right-hand axis; a goals / minutes / goals-per-90 panel;
+  demo data reshaped around matches (minutes and goals by venue).
 - **Derived metrics**: `MetricDefinition.Ratio(...)` defines a metric as numerator ÷ denominator × scale
   (goals per 90). Each input is aggregated through the report's aggregating steps (resample, rolling,
   `GroupBy`, `Total`) with the formula's aggregation, then divided — a ratio of totals. A missing

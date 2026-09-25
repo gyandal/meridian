@@ -44,9 +44,11 @@ app.MapPost("/api/report", async (ReportRequest request, CancellationToken ct) =
 });
 
 // Showcase — server-computed panels, one per feature.
-app.MapGet("/api/showcase", () =>
+app.MapGet("/api/showcase", async () =>
 {
-    var payload = Showcase.Build(source, today).Select(p => new
+    var panels = Showcase.Build(source, today);
+    panels.Insert(0, await Showcase.GoalsMinutesPer90Async(runtime.Engine, today));
+    var payload = panels.Select(p => new
     {
         id = p.Id,
         title = p.Title,

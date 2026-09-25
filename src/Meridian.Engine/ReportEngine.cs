@@ -13,6 +13,9 @@ public interface IReportEngine
 
     /// <summary>Run several reports; compatible ones share source round trips. Views come back in order.</summary>
     Task<IReadOnlyList<ChartView>> RunManyAsync(IReadOnlyList<PipelineSpec> specs, ProjectionOptions options, CancellationToken ct = default);
+
+    /// <summary>Run multi-series charts; every part of every chart is loaded together. Views come back in order.</summary>
+    Task<IReadOnlyList<ChartView>> RunChartsAsync(IReadOnlyList<ChartSpec> charts, ProjectionOptions options, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -85,6 +88,33 @@ public sealed class ReportEngine(
                     p.Spec.Entities.Select(e => ViewCache.Tag(p.Spec.Tenant, p.Metric.Id.Value, e))));
             }
             result[i] = view;
+        }
+        return result;
+    }
+
+    public async Task<ChartView> RunChartAsync(ChartSpec chart, ProjectionOptions options, CancellationToken ct = default) =>
+        (await RunChartsAsync([chart], options, ct).ConfigureAwait(false))[0];
+
+    /// <summary>
+    /// Runs multi-series charts: every part of every chart goes through one <see cref="RunManyAsync"/>, so a
+    /// dashboard's charts share fetches and batches, then each chart's parts are composed into one view.
+    /// </summary>
+    public async Task<IReadOnlyList<ChartView>> RunChartsAsync(IReadOnlyList<ChartSpec> charts, ProjectionOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(charts);
+        var parts = charts.SelectMany(c => c.Series).ToList();
+        var views = await RunManyAsync([.. parts.Select(p => p.Report)], options, ct).ConfigureAwait(false);
+
+        var result = new List<ChartView>(charts.Count);
+        int next = 0;
+        foreach (var chart in charts)
+        {
+            var composed = chart.Series.Select(p =>
+            {
+                var name = p.Name ?? (catalog.TryResolve(p.Report.Metric, out var m) ? m.Name : p.Report.Metric.Value);
+                return new ChartPart(views[next++], name, p.Axis);
+            }).ToList();
+            result.Add(ChartComposer.Compose(composed, options.Theme));
         }
         return result;
     }

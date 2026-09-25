@@ -4,8 +4,9 @@ using Meridian.Semantics;
 
 namespace Meridian.Hosts.Http;
 
-/// <summary>Deterministic demo data + catalog. Two daily time-series metrics (with a real gap on one
-/// athlete) and one categorical metric, so the showcase can exercise every feature offline.</summary>
+/// <summary>Deterministic demo data + catalog: two daily time-series metrics (with a real gap on one
+/// athlete), and matches — minutes played and goals scored, by venue — with goals per 90 derived from them,
+/// so the showcase can exercise every feature offline.</summary>
 public static class Seed
 {
     public const string Tenant = "demo";
@@ -14,6 +15,8 @@ public static class Seed
     public static readonly MetricId Load = new("training-load");
     public static readonly MetricId Hr = new("resting-hr");
     public static readonly MetricId Goals = new("goals");
+    public static readonly MetricId Minutes = new("minutes");
+    public static readonly MetricId GoalsPer90 = new("goals-per-90");
     public static readonly int[] Players = [1, 2, 3, 4];
     public const int HistoryDays = 540; // ~1.5 years so Season resampling has something to show
 
@@ -22,6 +25,8 @@ public static class Seed
         new MetricDefinition(Load, "Training Load", new Unit("au"), "mean", [Player], TimeGrain.Daily),
         new MetricDefinition(Hr, "Resting HR", new Unit("bpm"), "mean", [Player], TimeGrain.Daily),
         new MetricDefinition(Goals, "Goals", new Unit(""), "sum", [Player, Venue], TimeGrain.Instant),
+        new MetricDefinition(Minutes, "Minutes", new Unit("min"), "sum", [Player, Venue], TimeGrain.Instant),
+        MetricDefinition.Ratio(GoalsPer90, "Goals per 90", new Unit("/90"), Goals, Minutes, 90, [Player, Venue]),
     ]);
 
     public static Dictionary<string, List<Point>> Data(DateTime today)
@@ -45,18 +50,28 @@ public static class Seed
             }
         }
 
-        // Goals as dated events across ~2+ seasons, so "this season vs last" is a real query.
+        // Matches every fourth day across ~2+ seasons, so "this season vs last" is a real query. A player
+        // appears (minutes) or doesn't; goals are events, only in matches, at a rate tied to minutes played.
         var goals = new List<Point>();
-        foreach (var p in Players)
+        var minutes = new List<Point>();
+        var fixtures = new Random(2024);
+        for (int i = 0; i < 800; i += 4)
         {
-            var rng = new Random(p * 17 + 3);
-            double scoringRate = 0.10 + p * 0.03; // goals-per-match-ish, per player
-            for (int i = 0; i < 800; i++)
+            var venue = fixtures.NextDouble() < 0.5 ? "Home" : "Away";
+            var kickOff = Instant.FromUtc(today.AddDays(-(799 - i)).Date.AddHours(15));
+            foreach (var p in Players)
             {
-                if (rng.NextDouble() > scoringRate) continue;         // most days, no goal
-                var venue = rng.NextDouble() < 0.6 ? "Home" : "Away"; // home bias
+                var rng = new Random(p * 7919 + i);
+                if (rng.NextDouble() < 0.15) continue; // not in the squad
+                double played = rng.NextDouble() switch { < 0.65 => 90, < 0.85 => 20 + rng.Next(25), _ => 45 + rng.Next(40) };
                 var key = PointKey.Of(KeyPart.Entity(Player, p), KeyPart.Category(Venue, venue));
-                goals.Add(new Point(key, 1.0, Instant.FromUtc(today.AddDays(-(799 - i)))));
+                minutes.Add(new Point(key, played, kickOff));
+
+                double perChance = (0.10 + p * 0.04) * played / 90 * (venue == "Home" ? 1.2 : 0.9); // home bias
+                for (int chance = 0; chance < 3; chance++)
+                {
+                    if (rng.NextDouble() < perChance) goals.Add(new Point(key, 1.0, kickOff));
+                }
             }
         }
 
@@ -65,6 +80,7 @@ public static class Seed
             [Load.Value] = load,
             [Hr.Value] = hr,
             [Goals.Value] = goals,
+            [Minutes.Value] = minutes,
         };
     }
 }

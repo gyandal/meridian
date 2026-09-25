@@ -111,36 +111,51 @@
 
 <script>
 const $=s=>document.querySelector(s), NS="http://www.w3.org/2000/svg";
-const el=(n,a={})=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;};
+const el=(n,a={})=>{const e=document.createElementNS(NS,n);for(const k in a)if(a[k]!=null)e.setAttribute(k,a[k]);return e;};
 const num=v=>v==null?null:+v, f1=v=>(+v).toFixed(1);
 
 function renderChart(svg, view){
   svg.replaceChildren();
   const vb=svg.getAttribute("viewBox").split(" ").map(Number), W=vb[2], H=vb[3];
-  const m={t:12,r:16,b:26,l:40};
+  const dual=view.axes.length>2;
+  const m={t:12,r:dual?44:16,b:26,l:44};
   const iw=W-m.l-m.r, ih=H-m.t-m.b;
   const temporal=view.axes[0].kind==="Temporal";
-  const yA=view.axes[1];
+  const kindOf=s=>s.kind||view.kind, axisOf=s=>s.axis||1;
   const marks=view.series.flatMap(s=>s.marks);
-  const vals=marks.map(k=>k.value).filter(v=>v!=null);
-  let ymin=yA.min!=null?yA.min:Math.min(...vals), ymax=yA.max!=null?yA.max:Math.max(...vals);
-  if(ymin===ymax){ymin-=1;ymax+=1;} const padv=(ymax-ymin)*0.12; ymin-=padv; ymax+=padv;
-  if(ymin<0 && Math.min(...vals)>=0) ymin=0;
-  if(ymin>0 && view.kind!=="Line") ymin=Math.min(0,ymin);
-  const Y=v=>m.t+ih-(v-ymin)/(ymax-ymin)*ih;
 
-  // x domain
+  // One scale per value axis (1 = left, 2 = right), from that axis's series only.
+  const scales={};
+  for(const ai of dual?[1,2]:[1]){
+    const yA=view.axes[ai], ser=view.series.filter(s=>axisOf(s)===ai);
+    const vals=ser.flatMap(s=>s.marks.map(k=>k.value)).filter(v=>v!=null);
+    if(!vals.length){scales[ai]={Y:()=>0,ymin:0,ymax:1};continue;}
+    let ymin=yA.min!=null?yA.min:Math.min(...vals), ymax=yA.max!=null?yA.max:Math.max(...vals);
+    if(ymin===ymax){ymin-=1;ymax+=1;} const padv=(ymax-ymin)*0.12; ymin-=padv; ymax+=padv;
+    if(ymin<0 && Math.min(...vals)>=0) ymin=0;
+    if(ymin>0 && ser.some(s=>kindOf(s)!=="Line")) ymin=Math.min(0,ymin);
+    scales[ai]={ymin,ymax,Y:v=>m.t+ih-(v-ymin)/(ymax-ymin)*ih};
+  }
+  const fmt=(v,range)=>range<10?v.toFixed(1):v.toFixed(0);
+
+  // x domain: slots when any series is drawn as columns (so lines sit on bar centres), else continuous time.
   let cats=[], atMin=0, atMax=1;
   if(temporal){ const ats=[...new Set(marks.map(k=>k.at))].sort((a,b)=>a-b); atMin=ats[0]; atMax=ats[ats.length-1]||atMin+1; cats=ats; }
   else { cats=[...new Set(marks.map(k=>k.label))]; }
-  const isBar=view.kind==="Column";
+  const barSeries=view.series.filter(s=>kindOf(s)==="Column");
+  const slots=!temporal||barSeries.length>0;
   const slotW=iw/Math.max(cats.length,1);
-  const Xcont=at=>m.l+(at-atMin)/((atMax-atMin)||1)*iw;
   const Xslot=i=>m.l+(i+0.5)*slotW;
+  const X=k=>slots?Xslot(temporal?cats.indexOf(k.at):cats.indexOf(k.label)):m.l+(k.at-atMin)/((atMax-atMin)||1)*iw;
 
-  // grid + y labels
-  const g=el("g",{class:"grid"});
-  for(let i=0;i<=4;i++){const v=ymin+i/4*(ymax-ymin),yy=Y(v);g.appendChild(el("line",{x1:m.l,y1:yy,x2:W-m.r,y2:yy}));const t=el("text",{x:m.l-7,y:yy+3,"text-anchor":"end"});t.textContent=v.toFixed(0);g.appendChild(t);}
+  // grid + value labels (left; right for a secondary axis)
+  const g=el("g",{class:"grid"}), s1=scales[1];
+  for(let i=0;i<=4;i++){
+    const f=i/4, yy=m.t+ih-f*ih;
+    g.appendChild(el("line",{x1:m.l,y1:yy,x2:W-m.r,y2:yy}));
+    const t=el("text",{x:m.l-7,y:yy+3,"text-anchor":"end"});t.textContent=fmt(s1.ymin+f*(s1.ymax-s1.ymin),s1.ymax-s1.ymin);g.appendChild(t);
+    if(dual){const s2=scales[2];const r=el("text",{x:W-m.r+7,y:yy+3,"text-anchor":"start"});r.textContent=fmt(s2.ymin+f*(s2.ymax-s2.ymin),s2.ymax-s2.ymin);g.appendChild(r);}
+  }
   svg.appendChild(g);
   // x labels — temporal ticks reuse the server's mark labels, which were made in the report's zone and grain
   // (docs/TIME.md): the renderer never converts time zones itself.
@@ -148,31 +163,29 @@ function renderChart(svg, view){
   const tick=l=>/^\d{4}-\d{2}-\d{2}$/.test(l)?l.slice(5):/^\d{4}-\d{2}-\d{2} /.test(l)?l.slice(5,16):l;
   const step=Math.ceil(cats.length/6);
   cats.forEach((c,i)=>{ if(cats.length>7 && i%step!==0 && i!==cats.length-1) return;
-    const x=temporal?Xcont(c):Xslot(i); const lbl=temporal?tick(labelAt.get(c)||""):c;
+    const x=slots?Xslot(i):m.l+(c-atMin)/((atMax-atMin)||1)*iw; const lbl=temporal?tick(labelAt.get(c)||""):c;
     const t=el("text",{x,y:H-9,"text-anchor":"middle"});t.textContent=lbl;svg.appendChild(t);});
 
-  const nS=view.series.length;
-  view.series.forEach((s,si)=>{
-    if(isBar){
-      const bw=slotW*0.8/nS;
-      s.marks.forEach(k=>{ if(k.value==null)return;
-        const ci=temporal?cats.indexOf(k.at):cats.indexOf(k.label);
-        const x=Xslot(ci)-slotW*0.4+si*bw;
-        const r=el("rect",{x:x+1,y:Y(k.value),width:Math.max(1,bw-2),height:m.t+ih-Y(k.value),rx:2,fill:k.colorToken||s.colorToken});
-        r.appendChild(tip(k));svg.appendChild(r);});
-    } else {
-      const pts=s.marks.filter(k=>k.value!=null).map(k=>[temporal?Xcont(k.at):Xslot(cats.indexOf(k.label)),Y(k.value),k]);
-      if(!pts.length)return;
-      const d=pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
-      if(view.kind==="Area"){svg.appendChild(el("path",{d:d+` L ${pts[pts.length-1][0]} ${Y(ymin)} L ${pts[0][0]} ${Y(ymin)} Z`,fill:s.colorToken,opacity:.13}));}
-      svg.appendChild(el("path",{d,fill:"none",stroke:s.colorToken,"stroke-width":2,"stroke-linejoin":"round"}));
-      pts.forEach(([x,y,k])=>{const c=el("circle",{cx:x,cy:y,r:2.8,fill:k.colorToken||s.colorToken});c.appendChild(tip(k));svg.appendChild(c);});
-    }
+  // columns first (behind), then areas and lines
+  const bw=slotW*0.8/Math.max(barSeries.length,1);
+  barSeries.forEach((s,bi)=>{ const {Y}=scales[axisOf(s)];
+    s.marks.forEach(k=>{ if(k.value==null)return;
+      const x=X(k)-slotW*0.4+bi*bw;
+      const r=el("rect",{x:x+1,y:Y(k.value),width:Math.max(1,bw-2),height:m.t+ih-Y(k.value),rx:2,fill:k.colorToken||s.colorToken});
+      r.appendChild(tip(k));svg.appendChild(r);});
+  });
+  view.series.filter(s=>kindOf(s)!=="Column").forEach(s=>{ const {Y,ymin}=scales[axisOf(s)];
+    const pts=s.marks.filter(k=>k.value!=null).map(k=>[X(k),Y(k.value),k]);
+    if(!pts.length)return;
+    const d=pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
+    if(kindOf(s)==="Area"){svg.appendChild(el("path",{d:d+` L ${pts[pts.length-1][0]} ${Y(ymin)} L ${pts[0][0]} ${Y(ymin)} Z`,fill:s.colorToken,opacity:.13}));}
+    svg.appendChild(el("path",{d,fill:"none",stroke:s.colorToken,"stroke-width":2,"stroke-linejoin":"round","stroke-dasharray":axisOf(s)===2?"5 3":null}));
+    pts.forEach(([x,y,k])=>{const c=el("circle",{cx:x,cy:y,r:2.8,fill:k.colorToken||s.colorToken});c.appendChild(tip(k));svg.appendChild(c);});
   });
   svg.appendChild(el("line",{x1:m.l,y1:m.t+ih,x2:W-m.r,y2:m.t+ih,stroke:"var(--line)"}));
   function tip(k){const t=document.createElementNS(NS,"title");t.textContent=`${k.label}: ${f1(k.value)}${k.status&&k.status!=="Neutral"?"  ("+k.status+")":""}`;return t;}
 }
-function legendHtml(view){return view.series.map(s=>`<span><i style="background:${s.colorToken}"></i>${s.name}</span>`).join("");}
+function legendHtml(view){return view.series.map(s=>`<span><i style="background:${s.colorToken}"></i>${s.name}${s.axis===2?" (right axis)":""}</span>`).join("");}
 
 // ---------- builder ----------
 let selected=new Set(), metricsById={};

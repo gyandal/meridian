@@ -774,6 +774,56 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.Contains("can't", Assert.Throws<ArgumentException>(() => new InMemoryMetricCatalog([AppGoals, AppMinutes, bySky])).Message);
     }
 
+    private static PipelineSpec Monthly(MetricDefinition metric, ChartKind kind, params long[] athletes) => PipelineSpec.Create(
+        "club", metric.Id, [.. (athletes.Length == 0 ? [1L] : athletes).Select(a => new EntityRef(Athlete, a))], FirstHalf,
+        new ViewSpec(kind, AxisSource.Time, SeriesBy: athletes.Length > 1 ? Athlete : null),
+        Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing));
+
+    [Fact]
+    public async Task Goals_minutes_and_goals_per_90_on_one_chart_is_one_query()
+    {
+        var chart = ChartSpec.Of(
+            new SeriesSpec(Monthly(AppGoals, ChartKind.Column)),
+            new SeriesSpec(Monthly(AppMinutes, ChartKind.Line), Axis: ValueAxis.Secondary),
+            new SeriesSpec(Monthly(GoalsPer90, ChartKind.Line)));
+        var counting = new CountingSource(AppSource());
+
+        var view = await MeridianRuntime.InMemory(AppCatalog, counting).Engine.RunChartAsync(chart, ProjectionOptions.Default);
+
+        var batch = Assert.Single(counting.Batches); // goals, minutes, and the ratio's inputs: one query
+        Assert.Equal(["goals", "minutes"], batch.Metrics);
+        Assert.Equal(0, counting.Raws + counting.Rollups);
+
+        Assert.Equal(["Goals", "Minutes", "Goals per 90"], view.Series.Select(s => s.Name)); // catalog names
+        Assert.Equal([ChartKind.Column, ChartKind.Line, ChartKind.Line], view.Series.Select(s => s.Kind!.Value));
+        Assert.Equal([1, 2, 1], view.Series.Select(s => s.Axis!.Value));
+
+        // The ratio line agrees with the goals and minutes drawn beside it.
+        var goals = view.Series[0].Marks.ToDictionary(m => m.At!.Value, m => m.Value!.Value);
+        foreach (var minutes in view.Series[1].Marks)
+        {
+            var ratio = view.Series[2].Marks.Single(m => m.At == minutes.At).Value!.Value;
+            Assert.Equal(goals.GetValueOrDefault(minutes.At!.Value) / minutes.Value!.Value * 90, ratio, 9);
+        }
+    }
+
+    [Fact]
+    public async Task A_dashboard_of_charts_shares_one_query()
+    {
+        var counting = new CountingSource(AppSource());
+        var engine = MeridianRuntime.InMemory(AppCatalog, counting).Engine;
+
+        var views = await engine.RunChartsAsync(
+        [
+            ChartSpec.Of(new SeriesSpec(Monthly(AppGoals, ChartKind.Line, 1, 2, 3))),                  // squad goals
+            ChartSpec.Of(new SeriesSpec(Monthly(GoalsPer90, ChartKind.Line, 1, 2, 3), "Per 90")),       // squad rate
+        ], ProjectionOptions.Default);
+
+        Assert.Single(counting.Batches);
+        Assert.Equal(["Goals · athlete 1", "Goals · athlete 2", "Goals · athlete 3"], views[0].Series.Select(s => s.Name));
+        Assert.Equal("Per 90 · athlete 1", views[1].Series[0].Name);
+    }
+
     [Fact]
     public async Task Decimal_values_and_integer_ids_are_read_on_both_paths()
     {

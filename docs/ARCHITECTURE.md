@@ -102,6 +102,15 @@ used in any report like a stored metric. The rules that make it right:
 The catalog rejects bad definitions when it's built: unknown or derived inputs, mismatched time kinds, and
 dimensions an input can't be sliced by.
 
+## Multi-series charts
+
+A `ChartSpec` is a list of `SeriesSpec`s, each an ordinary report plus a display name and a value axis
+(primary or secondary). The engine runs every part of every chart in one `RunManyAsync` — so goals,
+minutes and goals per 90 are one query — and `ChartComposer` combines the parts: each keeps its own chart
+kind (columns, line, area), series get distinct colours and names ("Goals", or "Goals · player 7" when a
+part has a series per entity), and each side gets one value axis built from its parts. Parts must share
+the x-axis. A dashboard runs all its charts through `RunChartsAsync` to share fetches across them.
+
 ## Caching and invalidation
 
 The store contract is small: a backend implements get/set/remove (`IKeyValueStore`), and the
