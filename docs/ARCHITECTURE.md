@@ -22,7 +22,7 @@ entities, timeframe, transforms, view.
 |---|---|
 | `Meridian.Core` | `Instant`, typed composite keys (`PointKey`), `Measurement` (missing is a flag, never a null), the columnar `PointBlock` with its `TimeAxis`, aggregators, deterministic hashing |
 | `Meridian.Time` | `CalendarContext` (IANA zones via NodaTime, week start, seasons), periods (`Every`, `Hour`, `Day`, `Week`, `Month`, `Season`), `GapPolicy`, the `Resampler`, `StoredTime` and DST resolution |
-| `Meridian.Transforms` | `ITransform` (`PointBlock → PointBlock`) and the algebra: `Filter`, `Map`, `Rekey`, `Reduce`, `PerGroup`, `Resample`, `Rolling`, `Named`; `Binary.Combine`/`Compare` for two-input joins |
+| `Meridian.Transforms` | `ITransform` (`PointBlock → PointBlock`) and the algebra: `Filter`, `WhereIn` / `WhereNotIn` / `WhereValue`, `Map`, `Rekey`, `Reduce`, `PerGroup`, `Resample`, `Rolling`, `Named`; `Binary.Combine`/`Compare` for two-input joins |
 | `Meridian.Semantics` | `MetricDefinition` and `IMetricCatalog` |
 | `Meridian.Caching` | `IPointCacheStore` / `IKeyValueStore` backends, tag decorator, layering, `PointCache` (per-entity merge, batched loads, single-flight), version and tag invalidation |
 | `Meridian.Views` | `ChartView` (series → marks, typed axes, legend, annotations), `ViewSpec`, themes, label resolvers, status rules, `ChartProjector` |
@@ -78,6 +78,18 @@ Grouping is declarative — `Transform.Total(Sum, venue)` for goals by venue, `T
 venue)` to keep the time axis (goals by venue per month) — so it caches and can be expressed over an API.
 When bucketing is pushed down, the database groups by exactly the declared dimensions.
 
+Filtering is declarative too, and comes in two kinds that behave differently:
+
+- **By key** — `Transform.WhereIn(venue, "Home")`, `WhereNotIn(…)`: what a point *is*. Its result doesn't
+  depend on where it runs, so a key filter written before a resample is moved after it, and the resample
+  still pushes down — the database buckets by player and venue, the engine keeps the home buckets. (Pushing
+  the predicate itself into SQL is a later optimisation; the rows it would save are already aggregated.)
+- **By value** — `Transform.WhereValue(min, max)`: what a point *measures*. Order matters (a match with
+  45+ minutes is not a month with 45+ minutes), so it runs exactly where it's written.
+
+Filtering or grouping by a dimension the report folds away is an error, not an empty chart: declare it
+with `WithDimensions`.
+
 Attributes rarely sit on the fact row: the venue belongs to the match, a player's team changes over time.
 Meridian doesn't model joins; make the source's relation a view that joins them onto each row — for
 time-varying attributes, the value *as of the row's date* — and map the resulting columns.
@@ -92,7 +104,8 @@ used in any report like a stored metric. The rules that make it right:
   aggregating step of the report — resample, rolling window, `GroupBy`, `Total` — and the division happens
   after the last of them. "Goals per 90 by venue per month" divides monthly goal totals per venue by monthly
   minutes per venue; it never averages per-match ratios (where a one-goal, ten-minute cameo would swamp a
-  season). Transforms after the last aggregation apply to the ratio.
+  season). Transforms after the last aggregation apply to the ratio. A value filter before then is an
+  error — it would filter goals and minutes each by their own values.
 - **No rows is zero, no denominator is no value.** Goals are events, so a bucket with minutes but no goal
   rows is 0 goals per 90. A bucket with no (or zero) minutes has no value, even with a zero-fill gap policy.
 - **Inputs are ordinary fetches.** Each input goes through the cache, pushdown and batching like any
@@ -119,7 +132,7 @@ timeframe — rather than hard-coded ones. `RunDashboardAsync` runs every series
 `context.Focus(player)`, and because data is cached per entity it needs no new queries.
 
 Products that let users build dashboards store them as a `DashboardDefinition`: plain JSON with
-declarative transforms (`resample`, `rolling`, `groupBy`, `total`), views (`kind`, `x`, `seriesBy`) and
+declarative transforms (`resample`, `rolling`, `groupBy`, `total`, `where`, `range`), views (`kind`, `x`, `seriesBy`) and
 axes. `ToDashboard()` validates it and reports problems by JSON path (`charts[1].series[0].transforms[2].kind`),
 ready to show in an editor. Transforms that are code (a lambda `Filter`) can't be stored, by design.
 

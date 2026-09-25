@@ -24,6 +24,20 @@ public interface ITransform
 /// engine swaps the aggregator when it runs a derived metric's inputs, so that each side of a ratio is
 /// totalled the way the formula says before dividing.
 /// </summary>
+/// <summary>A transform that reads key dimensions (grouping or filtering by venue): a report using it must
+/// keep those dimensions, or every point would look the same to it.</summary>
+public interface IDimensionalTransform : ITransform
+{
+    IReadOnlyCollection<DimensionId> Dimensions { get; }
+}
+
+/// <summary>A filter on what a point is (its key), not its value — so it gives the same result before or after
+/// any per-key time bucketing, and the engine may move bucketing ahead of it to push it down.</summary>
+public interface IKeyFilter : IDimensionalTransform;
+
+/// <summary>A filter on a point's value. It depends on what has been aggregated so far, so it's never moved.</summary>
+public interface IValueFilter : ITransform;
+
 public interface IAggregatingTransform : ITransform
 {
     IAggregator Aggregator { get; }

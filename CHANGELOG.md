@@ -5,6 +5,22 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
 ## [Unreleased]
 
+### Added
+- **Declarative filters**: `Transform.WhereIn(dimension, values…)` / `WhereNotIn` keep points by what
+  they are (home matches, two competitions), and `Transform.WhereValue(min, max)` keeps points by their
+  value (inclusive bounds; missing values dropped). Both cache and can be stored: dashboard definitions
+  gain `where` (`dimension`, `in` / `notIn`) and `range` (`min`, `max`) transforms.
+- A key filter written before a resample still pushes down: the database buckets by the kept dimensions
+  and the engine filters the buckets.
+
+### Changed
+- A report that filters or groups by a dimension it doesn't keep is now an error that says to declare it
+  (`WithDimensions`), instead of silently matching nothing.
+- A value filter before a derived metric's last aggregation is an error: it would filter each input by
+  its own values (minutes ≥ 45 would also drop goals), which isn't what it reads as.
+- The demo API's `filterMin` / `filterMax` / `categoryValue` use the declarative filters, so those
+  reports now hit the view cache.
+
 ## [0.1.0-preview.3] — 2026-09-25
 
 ### Added

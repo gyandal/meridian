@@ -78,7 +78,9 @@ public sealed record SeriesDefinition(
 /// <c>resample</c> (<c>period</c>, <c>aggregator</c>, optional <c>gap</c>),
 /// <c>rolling</c> (<c>days</c>, <c>aggregator</c>),
 /// <c>groupBy</c> (<c>aggregator</c>, <c>by</c> — keeps time),
-/// <c>total</c> (<c>aggregator</c>, <c>by</c> — over the whole timeframe).
+/// <c>total</c> (<c>aggregator</c>, <c>by</c> — over the whole timeframe),
+/// <c>where</c> (<c>dimension</c> and <c>in</c> or <c>notIn</c> — e.g. home matches only),
+/// <c>range</c> (<c>min</c> and/or <c>max</c> — keep values in range).
 /// Periods: <c>day</c>, <c>week</c>, <c>month</c>, <c>season</c>, <c>hour</c>, or a span such as <c>15m</c> / <c>6h</c>.
 /// Gaps: <c>leave-missing</c> (default), <c>zero-fill</c>, <c>carry-forward</c>, <c>interpolate</c>.
 /// </summary>
@@ -88,7 +90,12 @@ public sealed record TransformDefinition(
     string? Aggregator = null,
     string? Gap = null,
     int? Days = null,
-    IReadOnlyList<string>? By = null)
+    IReadOnlyList<string>? By = null,
+    string? Dimension = null,
+    IReadOnlyList<string>? In = null,
+    IReadOnlyList<string>? NotIn = null,
+    double? Min = null,
+    double? Max = null)
 {
     internal ITransform ToTransform(string path) => Kind?.ToLowerInvariant() switch
     {
@@ -97,8 +104,23 @@ public sealed record TransformDefinition(
             : throw new DashboardDefinitionException(path + ".days", "a rolling window needs a positive number of days."),
         "groupby" => Transform.GroupBy(ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))]),
         "total" => Transform.Total(ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))]),
-        _ => throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a transform; use resample, rolling, groupBy or total."),
+        "where" => Where(path),
+        "range" => Min is null && Max is null
+            ? throw new DashboardDefinitionException(path, "a range needs a min, a max, or both.")
+            : Transform.WhereValue(Min, Max),
+        _ => throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a transform; use resample, rolling, groupBy, total, where or range."),
     };
+
+    private ITransform Where(string path)
+    {
+        if (string.IsNullOrWhiteSpace(Dimension)) throw new DashboardDefinitionException(path + ".dimension", "a where filter needs a dimension, e.g. \"venue\".");
+        return (In, NotIn) switch
+        {
+            ({ Count: > 0 } values, null) => Transform.WhereIn(new DimensionId(Dimension), [.. values]),
+            (null, { Count: > 0 } values) => Transform.WhereNotIn(new DimensionId(Dimension), [.. values]),
+            _ => throw new DashboardDefinitionException(path, "a where filter needs exactly one of \"in\" or \"notIn\", with at least one value."),
+        };
+    }
 
     private IAggregator ParseAggregator(string path) =>
         Aggregator is { } name && Aggregators.TryResolve(name, out var aggregator) ? aggregator

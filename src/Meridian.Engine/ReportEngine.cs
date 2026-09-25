@@ -146,6 +146,7 @@ public sealed class ReportEngine(
             throw new InvalidOperationException($"Unknown metric '{spec.Metric}'. Is it in the catalog?");
         }
         ValidateDimensions(spec, metric);
+        ValidateTransforms(spec);
 
         if (metric.Formula is null)
         {
@@ -172,6 +173,12 @@ public sealed class ReportEngine(
         var before = spec.Transforms.Take(last + 1)
             .Select(t => t is IAggregatingTransform a ? a.WithAggregator(inputAggregator) : t)
             .ToImmutableArray();
+        if (before.OfType<IValueFilter>().Any())
+        {
+            throw new ArgumentException(
+                $"A value filter before the last aggregation of derived metric '{metric.Id}' would apply to each of its inputs " +
+                $"({string.Join(", ", ratio.Inputs)}), which is rarely meant. Filter the result instead: place the value filter after the last aggregation.", nameof(spec));
+        }
         var after = spec.Transforms.Skip(last + 1).ToImmutableArray();
 
         var inputs = ratio.Inputs.Select(id =>
@@ -198,6 +205,25 @@ public sealed class ReportEngine(
         }
     }
 
+    /// <summary>A transform that groups or filters by a dimension needs the report to keep it — otherwise every
+    /// point lacks it and the transform silently treats them all alike.</summary>
+    private static void ValidateTransforms(PipelineSpec spec)
+    {
+        var keep = new HashSet<DimensionId>(Dimensions(spec)) { spec.Entities[0].Dimension };
+        foreach (var transform in spec.Transforms.OfType<IDimensionalTransform>())
+        {
+            foreach (var dimension in transform.Dimensions)
+            {
+                if (!keep.Contains(dimension))
+                {
+                    throw new ArgumentException(
+                        $"A transform in this report groups or filters by '{dimension}', which the report doesn't keep. " +
+                        $"Declare it: spec.WithDimensions({dimension}).", nameof(spec));
+                }
+            }
+        }
+    }
+
     private static ImmutableArray<DimensionId> Dimensions(PipelineSpec spec) =>
         spec.Dimensions.IsDefault ? [] : [.. spec.Dimensions.Distinct().Order()];
 
@@ -207,7 +233,15 @@ public sealed class ReportEngine(
         var dimensions = Dimensions(spec);
         var keep = new HashSet<DimensionId>(dimensions) { entityDimension };
 
+        // Key filters commute with per-key bucketing, so "home matches, then monthly totals" can bucket first —
+        // which lets the bucketing be pushed down — and filter the buckets after.
         var transforms = spec.Transforms;
+        int filters = 0;
+        while (filters < transforms.Length && transforms[filters] is IKeyFilter) filters++;
+        if (filters > 0 && filters < transforms.Length && transforms[filters] is ResampleTransform)
+        {
+            transforms = [transforms[filters], .. transforms.Take(filters), .. transforms.Skip(filters + 1)];
+        }
         var signature = "source"; // raw slices carry every dimension the source knows, so all reports share them
         SourceRollup? pushed = null;
 
