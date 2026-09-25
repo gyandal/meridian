@@ -63,7 +63,7 @@ public static class ReportRequestMapper
         {
             // Grouping: collapse to one aggregated value per group, drawn as a category chart.
             var groupDim = Dim(request.GroupBy);
-            transforms.Add(Transform.Reduce(p => Project(p.Key, groupDim), aggregator));
+            transforms.Add(Transform.Total(aggregator, groupDim));
             view = new ViewSpec(ChartKind.Column, AxisSource.Category(groupDim), ValueUnit: null);
         }
         else
@@ -93,17 +93,18 @@ public static class ReportRequestMapper
                 Status: status);
         }
 
+        // Keep the non-entity dimensions this report filters or groups on (sources return all they know).
+        var dimensions = new[] { request.CategoryDim, request.GroupBy }
+            .Where(d => d == "venue").Select(d => Dim(d!)).Distinct().ToArray();
+
         return PipelineSpec.Create(
             tenant,
             new MetricId(request.Metric),
             [.. request.Entities.Select(id => new EntityRef(entityDimension, id))],
             timeframe,
             view,
-            [.. transforms]);
+            [.. transforms]).WithDimensions(dimensions);
     }
-
-    private static PointKey Project(PointKey key, DimensionId dimension) =>
-        key.TryGet(dimension, out var part) ? PointKey.Of(part) : PointKey.Empty;
 
     private static IPeriod ResolvePeriod(string period) => period switch
     {

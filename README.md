@@ -34,6 +34,9 @@ var chart = await meridian.Engine.RunAsync(
 - **Caching that doesn't serve stale data.** Per-entity slices (adding one entity to a report fetches
   only that entity), finished-view caching, and invalidation driven by writes — versioned keys mean a
   missed event can't serve stale data.
+- **One metric, many views.** Group the same metric by player in one chart, by venue in another and by
+  month in a third: every attribute the data carries is a dimension, and charts that slice the same
+  metric share one fetch — so a dashboard can go from the whole squad to one player without new queries.
 - **One definition, every surface.** The same metric catalog drives charts, a REST API and a typed agent
   tool surface (describe the metrics, query a bounded report) — safer than letting an agent write SQL.
 - **Chart-agnostic output.** `ChartView` is plain JSON: series, marks, typed axes, server-side labels and

@@ -5,12 +5,19 @@ using Meridian.Time;
 
 namespace Meridian.Engine;
 
-/// <summary>A bucket-and-aggregate the engine would otherwise do itself, offered to the source.</summary>
-public sealed record SourceRollup(IPeriod Period, IAggregator Aggregator, CalendarContext Calendar)
+/// <summary>
+/// A bucket-and-aggregate the engine would otherwise do itself, offered to the source: group by the entity
+/// plus <see cref="Dimensions"/> (and nothing else), bucket by <see cref="Period"/> in the calendar's zone,
+/// and aggregate.
+/// </summary>
+public sealed record SourceRollup(IPeriod Period, IAggregator Aggregator, CalendarContext Calendar, IReadOnlyList<DimensionId>? Dimensions = null)
 {
+    /// <summary>The dimensions to group by besides the entity (never null).</summary>
+    public IReadOnlyList<DimensionId> GroupBy => Dimensions ?? [];
+
     /// <summary>Distinguishes rolled-up cache slices from raw ones (and from other rollups).</summary>
     public string Signature =>
-        $"rollup:{Period.Name}:{Aggregator.Name}:{Calendar.Zone.Id}:{Calendar.WeekStart}";
+        $"rollup:{Period.Name}:{Aggregator.Name}:{Calendar.Zone.Id}:{Calendar.WeekStart}:{string.Join(",", GroupBy.Select(d => d.Name))}";
 }
 
 /// <summary>

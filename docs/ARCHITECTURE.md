@@ -66,6 +66,22 @@ owns its data — not a service to host. The per-system work is a source adapter
    call across metrics when running many reports (`RunManyAsync`) — and store each slice.
 4. **Transform and project.** Apply the remaining transforms, project to a `ChartView`, cache the view.
 
+## Dimensions: slicing one metric many ways
+
+A point's key is the entity plus any other **dimensions** the data carries — venue, competition, match
+type. A metric declares the dimensions it can be sliced by (`MetricDefinition.ValidDimensions`); a source
+returns every one it can read; each report declares the ones it keeps (`PipelineSpec.WithDimensions`) and
+the engine folds the rest away. So a dashboard showing goals by player, by venue and by month runs three
+reports over **one** cached fetch.
+
+Grouping is declarative — `Transform.Total(Sum, venue)` for goals by venue, `Transform.GroupBy(Sum,
+venue)` to keep the time axis (goals by venue per month) — so it caches and can be expressed over an API.
+When bucketing is pushed down, the database groups by exactly the declared dimensions.
+
+Attributes rarely sit on the fact row: the venue belongs to the match, a player's team changes over time.
+Meridian doesn't model joins; make the source's relation a view that joins them onto each row — for
+time-varying attributes, the value *as of the row's date* — and map the resulting columns.
+
 ## Caching and invalidation
 
 The store contract is small: a backend implements get/set/remove (`IKeyValueStore`), and the

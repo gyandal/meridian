@@ -62,6 +62,16 @@ public sealed class DuckDbFixture : IDisposable
             FROM datapoints GROUP BY entity_id, ts;
             CREATE VIEW wide_as_long AS SELECT * FROM wide UNPIVOT INCLUDE NULLS (value FOR metric IN (load, hr));
 
+            -- Goals with the metadata dashboards group by: venue (sometimes unknown) and competition.
+            CREATE TABLE goals AS
+            SELECT e.entity_id, 'goals' AS metric, TIMESTAMP '2025-01-01' + to_hours(m.m * 37) AS ts,
+                   CAST(hash(e.entity_id * 11 + m.m) % 3 AS DOUBLE) AS value,
+                   CASE WHEN hash(e.entity_id * 5 + m.m) % 7 = 0 THEN NULL
+                        WHEN hash(e.entity_id * 13 + m.m) % 2 = 0 THEN 'Home' ELSE 'Away' END AS venue,
+                   CASE hash(e.entity_id * 3 + m.m) % 3 WHEN 0 THEN 'League' WHEN 1 THEN 'Cup' ELSE 'Europe' END AS competition
+            FROM range(1, 4) AS e(entity_id), range(0, 80) AS m(m);
+            CREATE TABLE goals_wide AS SELECT entity_id, ts, value AS goals, venue, competition FROM goals;
+
             CREATE TABLE typed (entity_id INTEGER, metric VARCHAR, ts TIMESTAMP, value DECIMAL(10, 2));
             INSERT INTO typed VALUES (1, 'typed', TIMESTAMP '2025-02-01 10:00', 12.50), (1, 'typed', TIMESTAMP '2025-02-02 10:00', 7.25);
 
@@ -499,6 +509,112 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => wide.FetchAsync(WellnessDef, [new EntityRef(Athlete, 1)], Timeframe));
         Assert.Contains("MetricColumns", error.Message);
+    }
+
+    private static readonly DimensionId Venue = new("venue");
+    private static readonly DimensionId Competition = new("competition");
+    private static readonly MetricDefinition GoalsDef = new(new MetricId("goals"), "Goals", new Unit(""), "sum", [Athlete, Venue, Competition], TimeGrain.Instant);
+    private static readonly InMemoryMetricCatalog GoalsCatalog = new([GoalsDef]);
+    private static readonly Dictionary<string, string> GoalDimensions = new() { ["venue"] = "venue", ["competition"] = "competition" };
+    private static readonly DateInterval Season = new(Instant.FromUtc(new DateTime(2025, 1, 1)), Instant.FromUtc(new DateTime(2025, 6, 1)));
+
+    private DuckDbPointSource GoalsSource(bool wide = false) => wide
+        ? new(new DuckDbSourceOptions(db.ConnectionString, Relation: "goals_wide",
+            MetricColumns: new Dictionary<string, string> { ["goals"] = "goals" }, DimensionColumns: GoalDimensions), Athlete)
+        : new(new DuckDbSourceOptions(db.ConnectionString, Relation: "goals", DimensionColumns: GoalDimensions), Athlete);
+
+    private static PipelineSpec GoalsReport(ViewSpec view, params ITransform[] transforms) => PipelineSpec.Create(
+        "club", GoalsDef.Id, [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2), new EntityRef(Athlete, 3)], Season, view, transforms);
+
+    private static Dictionary<string, double?> Totals(ChartView view) =>
+        view.Series.SelectMany(s => s.Marks).ToDictionary(m => m.Label, m => m.Value);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Goals_by_venue_come_from_the_venue_column(bool wide)
+    {
+        var report = GoalsReport(new ViewSpec(ChartKind.Column, AxisSource.Category(Venue)), Transform.Total(Aggregators.Sum, Venue))
+            .WithDimensions(Venue);
+
+        var view = await MeridianRuntime.InMemory(GoalsCatalog, GoalsSource(wide)).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        long home = db.Scalar("SELECT sum(value) FROM goals WHERE venue = 'Home' AND ts < TIMESTAMP '2025-06-01'");
+        long away = db.Scalar("SELECT sum(value) FROM goals WHERE venue = 'Away' AND ts < TIMESTAMP '2025-06-01'");
+        long unknown = db.Scalar("SELECT sum(value) FROM goals WHERE venue IS NULL AND ts < TIMESTAMP '2025-06-01'");
+        var totals = Totals(view);
+        Assert.Equal(home, totals["Home"]);
+        Assert.Equal(away, totals["Away"]);
+        Assert.Equal(unknown, totals[""]); // an unknown venue is the empty category, not dropped
+    }
+
+    [Fact]
+    public async Task The_same_metric_grouped_different_ways_shares_one_fetch()
+    {
+        var counting = new CountingSource(GoalsSource());
+        var engine = MeridianRuntime.InMemory(GoalsCatalog, counting).Engine;
+
+        var views = await engine.RunManyAsync(
+        [
+            GoalsReport(new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete)), Transform.Total(Aggregators.Sum, Athlete)),
+            GoalsReport(new ViewSpec(ChartKind.Column, AxisSource.Category(Venue)), Transform.Total(Aggregators.Sum, Venue)).WithDimensions(Venue),
+            GoalsReport(new ViewSpec(ChartKind.Column, AxisSource.Category(Competition)), Transform.Total(Aggregators.Sum, Competition)).WithDimensions(Competition),
+        ], ProjectionOptions.Default);
+
+        Assert.Equal(1, counting.Raws); // one fetch carries every dimension; each chart keeps what it needs
+        Assert.Equal(3, views[0].Series[0].Marks.Count);                          // three players
+        Assert.Equal(["", "Away", "Home"], Totals(views[1]).Keys.Order());         // venues
+        Assert.Equal(["Cup", "Europe", "League"], Totals(views[2]).Keys.Order());  // competitions
+        Assert.Equal(Totals(views[0]).Values.Sum(), Totals(views[1]).Values.Sum()); // same goals, sliced differently
+    }
+
+    [Theory]
+    [InlineData("UTC", false)]
+    [InlineData("Europe/London", false)]
+    [InlineData("Europe/London", true)]
+    public async Task Monthly_goals_by_venue_push_down_and_match_the_engine(string zone, bool wide)
+    {
+        var report = GoalsReport(new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Venue),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill), Transform.GroupBy(Aggregators.Sum, Venue))
+            .WithDimensions(Venue);
+
+        var counting = new CountingSource(GoalsSource(wide));
+        var viaSql = await MeridianRuntime.InMemory(GoalsCatalog, counting).Engine.RunAsync(report, In(zone));
+        var inEngine = await MeridianRuntime.InMemory(GoalsCatalog, new RawOnly(GoalsSource(wide))).Engine.RunAsync(report, In(zone));
+
+        Assert.Equal(1, counting.Rollups);
+        Assert.Equal(3, viaSql.Series.Count); // Home, Away, unknown
+        AssertSameView(inEngine, viaSql);
+    }
+
+    [Fact]
+    public async Task Dimensions_a_report_does_not_declare_are_folded_away()
+    {
+        var report = GoalsReport(new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing));
+        var withMetadata = await MeridianRuntime.InMemory(GoalsCatalog, new RawOnly(GoalsSource())).Engine.RunAsync(report, ProjectionOptions.Default);
+        var withoutMetadata = await MeridianRuntime.InMemory(GoalsCatalog, new RawOnly(
+            new DuckDbPointSource(new DuckDbSourceOptions(db.ConnectionString, Relation: "goals"), Athlete))).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        AssertSameView(withoutMetadata, withMetadata); // one monthly total per player, not split by venue
+    }
+
+    [Fact]
+    public async Task A_report_can_only_keep_dimensions_its_metric_declares()
+    {
+        var report = GoalsReport(new ViewSpec(ChartKind.Line, AxisSource.Time)).WithDimensions(new DimensionId("weather"));
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            MeridianRuntime.InMemory(GoalsCatalog, GoalsSource()).Engine.RunAsync(report, ProjectionOptions.Default));
+        Assert.Contains("weather", error.Message);
+    }
+
+    [Fact]
+    public void A_source_that_cannot_read_a_dimension_declines_to_group_by_it()
+    {
+        var blind = new DuckDbPointSource(new DuckDbSourceOptions(db.ConnectionString, Relation: "goals"), Athlete);
+        var byVenue = new SourceRollup(Period.Month, Aggregators.Sum, CalendarContext.Default, [Venue]);
+        Assert.False(blind.CanRollup(GoalsDef, byVenue));
+        Assert.True(GoalsSource().CanRollup(GoalsDef, byVenue));
     }
 
     [Fact]
