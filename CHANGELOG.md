@@ -5,6 +5,8 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
 ## [Unreleased]
 
+## [0.1.0-preview.3] — 2026-09-25
+
 ### Added
 - **Dashboards**: `Dashboard` (charts defined against a shared `DashboardContext` of tenant, entities and
   timeframe) and `ReportEngine.RunDashboardAsync`. Focusing on one entity is the same dashboard with a
@@ -86,5 +88,7 @@ First public preview: core point model, time and transforms, caching with per-en
 invalidation, chart-agnostic views and JSON contract, report engine, REST host with dashboard, agent tool
 surface, MySQL source.
 
+[Unreleased]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.3...HEAD
+[0.1.0-preview.3]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.2...v0.1.0-preview.3
 [0.1.0-preview.2]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.1...v0.1.0-preview.2
 [0.1.0-preview.1]: https://github.com/gyandal/meridian/releases/tag/v0.1.0-preview.1
