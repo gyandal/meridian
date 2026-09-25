@@ -30,7 +30,8 @@ public sealed class ReportEngine(
 {
     /// <summary>How one report will be served: its metric, cache scope, pushed-down rollup (if any), and
     /// the transforms still to run in the engine.</summary>
-    private sealed record Plan(PipelineSpec Spec, MetricDefinition Metric, CacheScope Scope, SourceRollup? Rollup, ImmutableArray<ITransform> Transforms);
+    private sealed record Plan(PipelineSpec Spec, MetricDefinition Metric, CacheScope Scope, SourceRollup? Rollup,
+        ImmutableArray<ITransform> Transforms, HashSet<DimensionId> Keep);
 
     public async Task<ChartView> RunAsync(PipelineSpec spec, ProjectionOptions options, CancellationToken ct = default)
     {
@@ -115,14 +116,26 @@ public sealed class ReportEngine(
             throw new InvalidOperationException($"Unknown metric '{spec.Metric}'. Is it in the catalog?");
         }
 
+        var entityDimension = spec.Entities[0].Dimension;
+        var dimensions = spec.Dimensions.IsDefault ? [] : spec.Dimensions.Distinct().Order().ToImmutableArray();
+        foreach (var dimension in dimensions)
+        {
+            if (dimension == entityDimension || !metric.ValidDimensions.Contains(dimension))
+            {
+                throw new ArgumentException(
+                    $"Metric '{metric.Id}' has no dimension '{dimension}' to keep. Its dimensions: {string.Join(", ", metric.ValidDimensions)}.", nameof(spec));
+            }
+        }
+        var keep = new HashSet<DimensionId>(dimensions) { entityDimension };
+
         var transforms = spec.Transforms;
-        var signature = "source"; // caches the raw fetch; transforms run after the merge
+        var signature = "source"; // raw slices carry every dimension the source knows, so all reports share them
         SourceRollup? pushed = null;
 
         // Pushdown: a leading resample the source can compute is done where the data lives.
         if (transforms.Length > 0 && transforms[0] is ResampleTransform resample && source is IRollupPointSource rollupSource)
         {
-            var rollup = new SourceRollup(resample.Period, resample.Aggregator, options.Calendar);
+            var rollup = new SourceRollup(resample.Period, resample.Aggregator, options.Calendar, dimensions);
             if (rollupSource.CanRollup(metric, rollup))
             {
                 pushed = rollup;
@@ -136,10 +149,10 @@ public sealed class ReportEngine(
         var scope = new CacheScope(
             Tenant: spec.Tenant,
             Metric: metric.Id.Value,
-            EntityDimension: spec.Entities[0].Dimension,
+            EntityDimension: entityDimension,
             Timeframe: spec.Timeframe,
             Signature: signature);
-        return new Plan(spec, metric, scope, pushed, transforms);
+        return new Plan(spec, metric, scope, pushed, transforms, keep);
     }
 
     /// <summary>Reports batch together when one source call can serve them all: same tenant, entity list,
@@ -173,6 +186,7 @@ public sealed class ReportEngine(
         return string.Join('|',
             s.Tenant, s.Metric, s.EntityDimension.Name, s.Timeframe.Start.UtcTicks, s.Timeframe.End.UtcTicks, s.Signature,
             cache.VersionStamp(s, plan.Spec.Entities),
+            string.Join(',', plan.Keep.Select(d => d.Name).Order(StringComparer.Ordinal)),
             string.Join(';', transforms),
             view.Kind, axis, view.SeriesBy?.Name, view.ValueAxisTitle, view.ValueUnit?.Symbol, (view.Status as ICacheIdentity)?.CacheIdentity,
             options.Calendar.Zone.Id, options.Calendar.WeekStart, season.CacheIdentity);
@@ -185,7 +199,7 @@ public sealed class ReportEngine(
     private ChartView Finish(Plan plan, PointBlock raw, ProjectionOptions options, string? viewKey)
     {
         var transformContext = new TransformContext(options.Calendar);
-        var current = raw;
+        var current = KeepOnly(raw, plan.Keep);
         foreach (var transform in plan.Transforms)
         {
             current = transform.Apply(current, transformContext);
@@ -197,6 +211,23 @@ public sealed class ReportEngine(
             views!.Set(viewKey, options, view, plan.Spec.Entities.Select(e => ViewCache.Tag(plan.Spec.Tenant, plan.Metric.Id.Value, e)));
         }
         return view;
+    }
+
+    /// <summary>Fold away dimensions the report didn't declare (sources return all they know).</summary>
+    private static PointBlock KeepOnly(PointBlock block, HashSet<DimensionId> keep)
+    {
+        var keys = block.Keys;
+        int i = 0;
+        while (i < keys.Length && keys[i].Only(keep).Count == keys[i].Count) i++;
+        if (i == keys.Length) return block; // nothing to fold: the common case costs one scan, no copy
+
+        var builder = PointBlock.Builder.Like(block);
+        for (int j = 0; j < block.Count; j++)
+        {
+            var row = block.Row(j);
+            builder.Add(row.Key.Only(keep), row.Measure, row.At);
+        }
+        return builder.Build();
     }
 
     private static PointBlock CheckTimeKind(MetricDefinition metric, PointBlock block)

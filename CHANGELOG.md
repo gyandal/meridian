@@ -6,11 +6,24 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 ## [Unreleased]
 
 ### Added
+- **Dimensions**: reports can group by attributes beyond the entity (venue, competition…).
+  `DuckDbSourceOptions.DimensionColumns` maps dimensions to columns; sources return every dimension a
+  metric declares, and each report keeps the ones it names (`PipelineSpec.WithDimensions`), so charts
+  slicing the same metric different ways share one cached fetch. Pushdown groups by exactly the
+  declared dimensions.
+- `Transform.GroupBy(aggregator, dims…)` (keeps time) and `Transform.Total(aggregator, dims…)`
+  (collapses time): declarative, cacheable grouping, output in key order.
+- `PointKey.Only(dimensions)`.
 - DuckDB source reads **wide tables** — one row per (entity, time), a column per metric — via
   `DuckDbSourceOptions.MetricColumns`. A multi-metric fetch or rollup is a single scan; NULL columns are
   missing values, exactly as in the long layout (parity tests compare the two).
 - TSBS benchmark reads TSBS's native wide schema too: 10-metric queries cold drop from 79 ms (long) to
   33 ms, and `double-groupby-all` from 1,617 ms to 552 ms.
+
+### Changed
+- Reports keep only the entity plus the dimensions they declare; other key parts a source returns are
+  folded away before transforms. A report that grouped by a dimension without declaring it must now call
+  `WithDimensions`.
 
 ## [0.1.0-preview.2] — 2026-09-25
 

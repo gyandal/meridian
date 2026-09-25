@@ -149,6 +149,20 @@ public readonly struct PointKey : IEquatable<PointKey>, IComparable<PointKey>
         return kept.Length == 0 ? Empty : new PointKey(kept); // already canonical order preserved
     }
 
+    /// <summary>Projection used by grouping: keep only the parts in <paramref name="dimensions"/>.</summary>
+    public PointKey Only(IReadOnlyCollection<DimensionId> dimensions)
+    {
+        if (_parts is null) return Empty;
+        bool all = true;
+        foreach (var p in _parts)
+        {
+            if (!dimensions.Contains(p.Dimension)) { all = false; break; }
+        }
+        if (all) return this; // the common case: nothing to drop, no allocation
+        var kept = _parts.Where(p => dimensions.Contains(p.Dimension)).ToArray();
+        return kept.Length == 0 ? Empty : new PointKey(kept); // canonical order preserved
+    }
+
     /// <summary>Return a new key with <paramref name="part"/> added or replacing its dimension.</summary>
     public PointKey With(KeyPart part)
     {

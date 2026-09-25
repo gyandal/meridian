@@ -20,6 +20,17 @@ public sealed record PipelineSpec(
     ImmutableArray<ITransform> Transforms,
     ViewSpec View)
 {
+    /// <summary>
+    /// Dimensions beyond the entity that this report keeps — e.g. venue, so it can group by venue. Each must
+    /// be one of the metric's <c>ValidDimensions</c>. Sources return every dimension they know; the engine
+    /// folds away the ones a report doesn't declare, so reports grouping the same metric different ways
+    /// share one cached fetch.
+    /// </summary>
+    public ImmutableArray<DimensionId> Dimensions { get; init; } = [];
+
+    /// <summary>This report, keeping <paramref name="dimensions"/> as well as the entity.</summary>
+    public PipelineSpec WithDimensions(params DimensionId[] dimensions) => this with { Dimensions = [.. dimensions] };
+
     public static PipelineSpec Create(
         string tenant,
         MetricId metric,

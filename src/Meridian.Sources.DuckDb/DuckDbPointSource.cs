@@ -21,6 +21,10 @@ namespace Meridian.Sources.DuckDb;
 /// expression from trusted configuration); <see cref="MetricColumn"/> and <see cref="ValueColumn"/> are then
 /// unused. A NULL in a metric's column is a missing value for that metric, exactly as a NULL-valued row is
 /// in the long layout.
+///
+/// <see cref="DimensionColumns"/> maps dimension names (venue, competition…) to columns so reports can
+/// group by them. Attributes that live elsewhere — the venue on the match, a player's team on the date —
+/// belong in <see cref="Relation"/>: make it a view that joins them onto each row, date-correctly.
 /// </summary>
 public sealed record DuckDbSourceOptions(
     string ConnectionString,
@@ -30,7 +34,8 @@ public sealed record DuckDbSourceOptions(
     string ValueColumn = "value",
     string TimestampColumn = "ts",
     StoredTime? StoredTime = null,
-    IReadOnlyDictionary<string, string>? MetricColumns = null)
+    IReadOnlyDictionary<string, string>? MetricColumns = null,
+    IReadOnlyDictionary<string, string>? DimensionColumns = null)
 {
     public StoredTime Time => StoredTime ?? Meridian.Time.StoredTime.Utc;
 }
@@ -83,6 +88,11 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
     public bool CanRollup(MetricDefinition metric, SourceRollup rollup)
     {
         if (options.MetricColumns is { } columns && !columns.ContainsKey(metric.Id.Value)) return false;
+        foreach (var dimension in rollup.GroupBy)
+        {
+            // Grouping must be exact: a dimension this source can't read would silently merge its values.
+            if (options.DimensionColumns?.ContainsKey(dimension.Name) != true || !metric.ValidDimensions.Contains(dimension)) return false;
+        }
         var time = options.Time;
         bool wallClockConvertible = time.Zone is null
             || (time.Resolution!.Ambiguous != AmbiguousTime.Reject && time.Resolution.Skipped != SkippedTime.Reject);
@@ -120,9 +130,12 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         }
         var distinct = metrics.DistinctBy(m => m.Id).ToList();
         var shape = rollup is null ? null : Shape(rollup, timeframe);
+        // Raw rows carry every dimension the metrics declare that this source can read; a rollup groups by
+        // exactly the ones asked for.
+        var dimensions = rollup?.GroupBy.ToList() ?? KnownDimensions(distinct);
         return options.MetricColumns is null
-            ? FetchLongAsync(distinct, entities, timeframe, shape, ct)
-            : FetchWideAsync(distinct, entities, timeframe, shape, ct);
+            ? FetchLongAsync(distinct, entities, timeframe, shape, dimensions, ct)
+            : FetchWideAsync(distinct, entities, timeframe, shape, dimensions, ct);
     }
 
     /// <summary>How a rollup is computed in SQL: the bucket expression, what orders values for <c>last</c>,
@@ -171,16 +184,19 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         $"CASE WHEN count({value}) = 0 THEN NULL ELSE CAST({SqlAggregates[shape.Aggregator].Replace("{v}", value).Replace("{t}", shape.OrderBy)} AS DOUBLE) END";
 
     private Task<IReadOnlyDictionary<MetricId, PointBlock>> FetchLongAsync(
-        List<MetricDefinition> metrics, IReadOnlyList<EntityRef> entities, DateInterval timeframe, RollupShape? shape, CancellationToken ct)
+        List<MetricDefinition> metrics, IReadOnlyList<EntityRef> entities, DateInterval timeframe, RollupShape? shape,
+        List<DimensionId> dimensions, CancellationToken ct)
     {
         var o = options;
+        var (select, groupBy) = DimensionSql(dimensions, firstOrdinal: 5);
         var sql = shape is null
             // Values may be DECIMAL or INTEGER in real schemas (fares, counts): DuckDB casts, we read doubles.
-            ? $"SELECT {o.MetricColumn}, {o.EntityColumn}, CAST({o.ValueColumn} AS DOUBLE), {o.TimestampColumn} FROM {o.Relation} " +
+            ? $"SELECT {o.MetricColumn}, {o.EntityColumn}, CAST({o.ValueColumn} AS DOUBLE), {o.TimestampColumn}{select} FROM {o.Relation} " +
               Where(entities, metrics.Count) + " ORDER BY 1, 2, 4"
-            : $"SELECT {o.MetricColumn}, {o.EntityColumn}, {Aggregate(shape, o.ValueColumn)}, CAST({shape.Bucket} AS TIMESTAMP) AS bucket " +
-              $"FROM {o.Relation} " + Where(entities, metrics.Count) + shape.Exact + " GROUP BY 1, 2, 4 ORDER BY 1, 2, 4";
-        return QueryAsync(sql, metrics, timeframe, entities, shape?.Axis ?? o.Time.Axis, raw: shape is null, ct, shape?.WallRange);
+            : $"SELECT {o.MetricColumn}, {o.EntityColumn}, {Aggregate(shape, o.ValueColumn)}, CAST({shape.Bucket} AS TIMESTAMP) AS bucket{select} " +
+              $"FROM {o.Relation} " + Where(entities, metrics.Count) + shape.Exact + $" GROUP BY 1, 2, 4{groupBy} ORDER BY 1, 2, 4";
+        var keys = new KeyReader(entityDimension, dimensions, entityOrdinal: 1, firstDimensionOrdinal: 4);
+        return QueryAsync(sql, metrics, timeframe, entities, shape?.Axis ?? o.Time.Axis, raw: shape is null, keys, ct, shape?.WallRange);
     }
 
     /// <summary>
@@ -188,15 +204,18 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
     /// GROUP BY), so a multi-metric request touches each row once instead of once per metric.
     /// </summary>
     private async Task<IReadOnlyDictionary<MetricId, PointBlock>> FetchWideAsync(
-        List<MetricDefinition> metrics, IReadOnlyList<EntityRef> entities, DateInterval timeframe, RollupShape? shape, CancellationToken ct)
+        List<MetricDefinition> metrics, IReadOnlyList<EntityRef> entities, DateInterval timeframe, RollupShape? shape,
+        List<DimensionId> dimensions, CancellationToken ct)
     {
         var o = options;
         var columns = metrics.Select(WideColumn).ToList();
+        var (select, groupBy) = DimensionSql(dimensions, firstOrdinal: 3 + columns.Count);
         var sql = shape is null
-            ? $"SELECT {o.EntityColumn}, {o.TimestampColumn}, {string.Join(", ", columns.Select(c => $"CAST({c} AS DOUBLE)"))} " +
+            ? $"SELECT {o.EntityColumn}, {o.TimestampColumn}, {string.Join(", ", columns.Select(c => $"CAST({c} AS DOUBLE)"))}{select} " +
               $"FROM {o.Relation} " + Where(entities, metricCount: 0) + " ORDER BY 1, 2"
-            : $"SELECT {o.EntityColumn}, CAST({shape.Bucket} AS TIMESTAMP) AS bucket, {string.Join(", ", columns.Select(c => Aggregate(shape, c)))} " +
-              $"FROM {o.Relation} " + Where(entities, metricCount: 0) + shape.Exact + " GROUP BY 1, 2 ORDER BY 1, 2";
+            : $"SELECT {o.EntityColumn}, CAST({shape.Bucket} AS TIMESTAMP) AS bucket, {string.Join(", ", columns.Select(c => Aggregate(shape, c)))}{select} " +
+              $"FROM {o.Relation} " + Where(entities, metricCount: 0) + shape.Exact + $" GROUP BY 1, 2{groupBy} ORDER BY 1, 2";
+        var keys = new KeyReader(entityDimension, dimensions, entityOrdinal: 0, firstDimensionOrdinal: 2 + columns.Count);
 
         var axis = shape?.Axis ?? o.Time.Axis;
         var builders = metrics.Select(m => new PointBlock.Builder(m.Unit, axis)).ToArray();
@@ -207,19 +226,12 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
             await using var conn = await ConnectAsync(ct).ConfigureAwait(false);
             await using var cmd = Command(conn, sql, [], timeframe, shape?.WallRange);
             await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-            PointKey key = default;
-            long currentId = long.MinValue;
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
                 long ticks = raw ? ReadTicks(reader.GetValue(1), time) : ToDateTime(reader.GetValue(1)).Ticks;
                 if (raw && time.NeedsExactFilter && (ticks < timeframe.Start.UtcTicks || ticks >= timeframe.End.UtcTicks)) continue;
 
-                long id = reader.GetInt64(0);
-                if (id != currentId)
-                {
-                    currentId = id;
-                    key = PointKey.Of(KeyPart.Entity(entityDimension, id));
-                }
+                var key = keys.Read(reader);
                 var at = new Instant(ticks);
                 for (int m = 0; m < builders.Length; m++)
                 {
@@ -229,6 +241,54 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
             }
         }
         return metrics.Select((m, i) => (m.Id, Block: builders[i].Build())).ToDictionary(x => x.Id, x => x.Block);
+    }
+
+    /// <summary>Dimensions the metrics declare that this source has a column for.</summary>
+    private List<DimensionId> KnownDimensions(IEnumerable<MetricDefinition> metrics) =>
+        options.DimensionColumns is not { } columns ? []
+            : [.. metrics.SelectMany(m => m.ValidDimensions).Distinct()
+                .Where(d => d != entityDimension && columns.ContainsKey(d.Name)).Order()];
+
+    /// <summary>The SELECT tail and GROUP BY ordinals for dimension columns starting at <paramref name="firstOrdinal"/> (1-based).</summary>
+    private (string Select, string GroupBy) DimensionSql(List<DimensionId> dimensions, int firstOrdinal) =>
+        dimensions.Count == 0 ? ("", "")
+            : (string.Concat(dimensions.Select(d => ", " + options.DimensionColumns![d.Name])),
+               string.Concat(dimensions.Select((_, i) => ", " + (firstOrdinal + i).ToString(CultureInfo.InvariantCulture))));
+
+    /// <summary>Builds each row's key — the entity plus its dimension values — reusing the previous key
+    /// while nothing changes. A NULL dimension value is the empty category.</summary>
+    private sealed class KeyReader(DimensionId entity, List<DimensionId> dimensions, int entityOrdinal, int firstDimensionOrdinal)
+    {
+        private readonly string?[] _values = new string?[dimensions.Count];
+        private long _id = long.MinValue;
+        private PointKey _key;
+        private bool _started;
+
+        public PointKey Read(System.Data.Common.DbDataReader reader)
+        {
+            long id = reader.GetInt64(entityOrdinal);
+            bool same = _started && id == _id;
+            for (int i = 0; i < _values.Length; i++)
+            {
+                int ordinal = firstDimensionOrdinal + i;
+                var value = reader.IsDBNull(ordinal) ? "" : Convert.ToString(reader.GetValue(ordinal), CultureInfo.InvariantCulture) ?? "";
+                if (value != _values[i])
+                {
+                    _values[i] = value;
+                    same = false;
+                }
+            }
+            if (!same)
+            {
+                var parts = new KeyPart[_values.Length + 1];
+                parts[0] = KeyPart.Entity(entity, id);
+                for (int i = 0; i < _values.Length; i++) parts[i + 1] = KeyPart.Category(dimensions[i], _values[i]!);
+                _key = PointKey.Of(parts);
+                _id = id;
+                _started = true;
+            }
+            return _key;
+        }
     }
 
     private string WideColumn(MetricDefinition metric) =>
@@ -281,27 +341,25 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
     /// <summary>Runs a query whose columns are (metric, entity, value, time) and splits it into a block per metric.</summary>
     private async Task<IReadOnlyDictionary<MetricId, PointBlock>> QueryAsync(
         string sql, IReadOnlyList<MetricDefinition> metrics, DateInterval timeframe, IReadOnlyList<EntityRef> entities,
-        TimeAxis axis, bool raw, CancellationToken ct, (DateTime Start, DateTime End)? wallRange = null)
+        TimeAxis axis, bool raw, KeyReader keys, CancellationToken ct, (DateTime Start, DateTime End)? wallRange = null)
     {
         var builders = metrics.DistinctBy(m => m.Id).ToDictionary(m => m.Id.Value, m => new PointBlock.Builder(m.Unit, axis));
         if (entities.Count > 0 && builders.Count > 0)
         {
-            await ReadAsync(sql, metrics, timeframe, raw, wallRange, builders, ct).ConfigureAwait(false);
+            await ReadAsync(sql, metrics, timeframe, raw, wallRange, builders, keys, ct).ConfigureAwait(false);
         }
         return builders.ToDictionary(kv => new MetricId(kv.Key), kv => kv.Value.Build());
     }
 
     private async Task ReadAsync(
         string sql, IReadOnlyList<MetricDefinition> metrics, DateInterval timeframe, bool raw,
-        (DateTime Start, DateTime End)? wallRange, Dictionary<string, PointBlock.Builder> builders, CancellationToken ct)
+        (DateTime Start, DateTime End)? wallRange, Dictionary<string, PointBlock.Builder> builders, KeyReader keys, CancellationToken ct)
     {
         var time = options.Time;
 
         await using var conn = await ConnectAsync(ct).ConfigureAwait(false);
         await using var cmd = Command(conn, sql, metrics, timeframe, wallRange);
         await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        PointKey key = default;
-        long currentId = long.MinValue;
         string? currentMetric = null;
         PointBlock.Builder builder = null!;
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -311,18 +369,12 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
             if (raw && time.NeedsExactFilter && (ticks < timeframe.Start.UtcTicks || ticks >= timeframe.End.UtcTicks)) continue;
 
             var metric = Convert.ToString(reader.GetValue(0), CultureInfo.InvariantCulture)!;
-            long id = reader.GetInt64(1);
             if (metric != currentMetric)
             {
                 currentMetric = metric;
                 builder = builders[metric];
-                currentId = long.MinValue;
             }
-            if (id != currentId)
-            {
-                currentId = id;
-                key = PointKey.Of(KeyPart.Entity(entityDimension, id));
-            }
+            var key = keys.Read(reader);
             var measure = reader.IsDBNull(2) ? Measurement.Missing : Measurement.Of(reader.GetDouble(2));
             builder.Add(key, measure, new Instant(ticks));
         }
