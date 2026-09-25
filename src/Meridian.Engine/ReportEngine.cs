@@ -54,7 +54,7 @@ public sealed class ReportEngine(
     /// <summary>A report: its inputs, how they combine (null for a stored metric), and transforms that run
     /// on the combined series.</summary>
     private sealed record Request(PipelineSpec Spec, MetricDefinition Metric, IReadOnlyList<Plan> Inputs,
-        RatioFormula? Ratio, ImmutableArray<ITransform> After);
+        MetricFormula? Formula, ImmutableArray<ITransform> After);
 
     public async Task<ChartView> RunAsync(PipelineSpec spec, ProjectionOptions options, CancellationToken ct = default) =>
         (await RunManyAsync([spec], options, ct).ConfigureAwait(false))[0];
@@ -150,15 +150,16 @@ public sealed class ReportEngine(
 
         if (metric.Formula is null)
         {
-            return new Request(spec, metric, [PlanFor(spec, metric, options)], Ratio: null, After: []);
+            return new Request(spec, metric, [PlanFor(spec, metric, options)], Formula: null, After: []);
         }
-        if (metric.Formula is not RatioFormula ratio)
+        var formula = metric.Formula;
+        if (formula is not (RatioFormula or LinearFormula))
         {
-            throw new NotSupportedException($"Metric '{metric.Id}' uses an unsupported formula: {metric.Formula}.");
+            throw new NotSupportedException($"Metric '{metric.Id}' uses an unsupported formula: {formula}.");
         }
-        if (!Aggregators.TryResolve(ratio.Aggregation, out var inputAggregator))
+        if (!Aggregators.TryResolve(formula.Aggregation, out var inputAggregator))
         {
-            throw new InvalidOperationException($"Derived metric '{metric.Id}' aggregates its inputs with unknown aggregator '{ratio.Aggregation}'.");
+            throw new InvalidOperationException($"Derived metric '{metric.Id}' aggregates its inputs with unknown aggregator '{formula.Aggregation}'.");
         }
 
         // Each input is aggregated — every aggregating step, with the formula's aggregator — up to and
@@ -177,11 +178,17 @@ public sealed class ReportEngine(
         {
             throw new ArgumentException(
                 $"A value filter before the last aggregation of derived metric '{metric.Id}' would apply to each of its inputs " +
-                $"({string.Join(", ", ratio.Inputs)}), which is rarely meant. Filter the result instead: place the value filter after the last aggregation.", nameof(spec));
+                $"({string.Join(", ", formula.Inputs)}), which is rarely meant. Filter the result instead: place the value filter after the last aggregation.", nameof(spec));
         }
         var after = spec.Transforms.Skip(last + 1).ToImmutableArray();
+        if (formula is RatioFormula && after.OfType<IShareTransform>().Any())
+        {
+            throw new ArgumentException(
+                $"Derived metric '{metric.Id}' is a ratio, and ratios don't add up: a share of their sum means nothing. " +
+                "Take shares of its numerator (e.g. share of goals) instead.", nameof(spec));
+        }
 
-        var inputs = ratio.Inputs.Select(id =>
+        var inputs = formula.Inputs.Select(id =>
         {
             var input = catalog.TryResolve(id, out var m) ? m
                 : throw new InvalidOperationException($"Derived metric '{metric.Id}' uses unknown metric '{id}'.");
@@ -189,7 +196,7 @@ public sealed class ReportEngine(
             ValidateDimensions(inputSpec, input);
             return PlanFor(inputSpec, input, options);
         }).ToList();
-        return new Request(spec, metric, inputs, ratio, after);
+        return new Request(spec, metric, inputs, formula, after);
     }
 
     private static void ValidateDimensions(PipelineSpec spec, MetricDefinition metric)
@@ -326,7 +333,12 @@ public sealed class ReportEngine(
     {
         var context = new TransformContext(options.Calendar);
         var blocks = request.Inputs.Select(p => Apply(p.Transforms, KeepOnly(raws[p.LoadKey], p.Keep), context)).ToList();
-        var combined = request.Ratio is { } ratio ? Ratio(blocks[0], blocks[1], ratio.Scale, request.Metric.Unit) : blocks[0];
+        var combined = request.Formula switch
+        {
+            RatioFormula ratio => Ratio(blocks[0], blocks[1], ratio.Scale, request.Metric.Unit),
+            LinearFormula linear => Linear(blocks, linear, request.Metric.Unit),
+            _ => blocks[0],
+        };
         return Apply(request.After, combined, context);
     }
 
@@ -360,6 +372,40 @@ public sealed class ReportEngine(
             double n = totals.TryGetValue((denominator.Keys[i], denominator.AtTicks[i]), out var v) ? v : 0;
             long at = denominator.AtTicks[i];
             output.Add(denominator.Keys[i], Measurement.Of(n / d * scale), at == PointBlock.NoAt ? null : new Instant(at));
+        }
+        return output.Build();
+    }
+
+    /// <summary>
+    /// Σ coefficient × input for each (key, time) any input has — or, with <see cref="MissingInput.NoValue"/>,
+    /// only those every input has. Output is in key-then-time order whatever order the inputs arrived in.
+    /// </summary>
+    private static PointBlock Linear(IReadOnlyList<PointBlock> inputs, LinearFormula formula, Unit unit)
+    {
+        var present = inputs.Where(b => b.Count > 0).ToList();
+        if (present.Select(b => b.Time.Kind).Distinct().Count() > 1)
+        {
+            throw new InvalidOperationException("A formula's inputs must have the same kind of time.");
+        }
+        var totals = new Dictionary<(PointKey Key, long At), (double Sum, int Inputs)>();
+        for (int t = 0; t < inputs.Count; t++)
+        {
+            var block = inputs[t];
+            double coefficient = formula.Terms[t].Coefficient;
+            for (int i = 0; i < block.Count; i++)
+            {
+                if ((block.Flags[i] & MeasureFlags.Missing) != 0) continue;
+                var slot = (block.Keys[i], block.AtTicks[i]);
+                var (sum, seen) = totals.GetValueOrDefault(slot);
+                totals[slot] = (sum + coefficient * block.Values[i], seen + 1);
+            }
+        }
+
+        var output = new PointBlock.Builder(unit, present.Count > 0 ? present[0].Time : inputs[0].Time);
+        foreach (var ((key, at), (sum, seen)) in totals.OrderBy(e => e.Key.Key).ThenBy(e => e.Key.At))
+        {
+            if (formula.Missing == MissingInput.NoValue && seen < inputs.Count) continue;
+            output.Add(key, Measurement.Of(sum), at == PointBlock.NoAt ? null : new Instant(at));
         }
         return output.Build();
     }
@@ -428,8 +474,9 @@ public sealed class ReportEngine(
     }
 
     private static ViewSpec ResolvedView(Request request) =>
-        // Default the value unit from the catalog if the view didn't pin one.
-        request.Spec.View.ValueUnit is null ? request.Spec.View with { ValueUnit = request.Metric.Unit } : request.Spec.View;
+        // Default the value unit from the catalog if the view didn't pin one — or % once a share is taken.
+        request.Spec.View.ValueUnit is not null ? request.Spec.View
+            : request.Spec.View with { ValueUnit = request.Spec.Transforms.Any(t => t is IShareTransform) ? new Unit("%") : request.Metric.Unit };
 
     private static PointBlock CheckTimeKind(MetricDefinition metric, PointBlock block)
     {

@@ -19,11 +19,6 @@ public interface ITransform
     PointBlock Apply(PointBlock input, TransformContext ctx);
 }
 
-/// <summary>
-/// A transform that combines values with an aggregator (resample, rolling, group-by, total, reduce). The
-/// engine swaps the aggregator when it runs a derived metric's inputs, so that each side of a ratio is
-/// totalled the way the formula says before dividing.
-/// </summary>
 /// <summary>A transform that reads key dimensions (grouping or filtering by venue): a report using it must
 /// keep those dimensions, or every point would look the same to it.</summary>
 public interface IDimensionalTransform : ITransform
@@ -38,6 +33,14 @@ public interface IKeyFilter : IDimensionalTransform;
 /// <summary>A filter on a point's value. It depends on what has been aggregated so far, so it's never moved.</summary>
 public interface IValueFilter : ITransform;
 
+/// <summary>A transform that divides each value by a total of values (a share), so it needs values that add up.</summary>
+public interface IShareTransform : IDimensionalTransform;
+
+/// <summary>
+/// A transform that combines values with an aggregator (resample, rolling, group-by, total, reduce). The
+/// engine swaps the aggregator when it runs a derived metric's inputs, so that each input is totalled the
+/// way the formula says before they're combined.
+/// </summary>
 public interface IAggregatingTransform : ITransform
 {
     IAggregator Aggregator { get; }

@@ -17,6 +17,8 @@ public static class Seed
     public static readonly MetricId Goals = new("goals");
     public static readonly MetricId Minutes = new("minutes");
     public static readonly MetricId GoalsPer90 = new("goals-per-90");
+    public static readonly MetricId Assists = new("assists");
+    public static readonly MetricId Involvements = new("goal-involvements");
     public static readonly int[] Players = [1, 2, 3, 4];
     public const int HistoryDays = 540; // ~1.5 years so Season resampling has something to show
 
@@ -27,6 +29,8 @@ public static class Seed
         new MetricDefinition(Goals, "Goals", new Unit(""), "sum", [Player, Venue], TimeGrain.Instant),
         new MetricDefinition(Minutes, "Minutes", new Unit("min"), "sum", [Player, Venue], TimeGrain.Instant),
         MetricDefinition.Ratio(GoalsPer90, "Goals per 90", new Unit("/90"), Goals, Minutes, 90, [Player, Venue]),
+        new MetricDefinition(Assists, "Assists", new Unit(""), "sum", [Player, Venue], TimeGrain.Instant),
+        MetricDefinition.Sum(Involvements, "Goal involvements", new Unit(""), [Goals, Assists], [Player, Venue]),
     ]);
 
     public static Dictionary<string, List<Point>> Data(DateTime today)
@@ -54,6 +58,7 @@ public static class Seed
         // appears (minutes) or doesn't; goals are events, only in matches, at a rate tied to minutes played.
         var goals = new List<Point>();
         var minutes = new List<Point>();
+        var assists = new List<Point>();
         var fixtures = new Random(2024);
         for (int i = 0; i < 800; i += 4)
         {
@@ -72,6 +77,8 @@ public static class Seed
                 {
                     if (rng.NextDouble() < perChance) goals.Add(new Point(key, 1.0, kickOff));
                 }
+                var creator = new Random(p * 4099 + i); // its own stream, so goals are as before
+                if (creator.NextDouble() < (0.30 - p * 0.04) * played / 90) assists.Add(new Point(key, 1.0, kickOff));
             }
         }
 
@@ -81,6 +88,7 @@ public static class Seed
             [Hr.Value] = hr,
             [Goals.Value] = goals,
             [Minutes.Value] = minutes,
+            [Assists.Value] = assists,
         };
     }
 }

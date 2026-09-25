@@ -80,7 +80,8 @@ public sealed record SeriesDefinition(
 /// <c>groupBy</c> (<c>aggregator</c>, <c>by</c> — keeps time),
 /// <c>total</c> (<c>aggregator</c>, <c>by</c> — over the whole timeframe),
 /// <c>where</c> (<c>dimension</c> and <c>in</c> or <c>notIn</c> — e.g. home matches only),
-/// <c>range</c> (<c>min</c> and/or <c>max</c> — keep values in range).
+/// <c>range</c> (<c>min</c> and/or <c>max</c> — keep values in range),
+/// <c>share</c> (<c>by</c> — each value as a % of the total across those dimensions).
 /// Periods: <c>day</c>, <c>week</c>, <c>month</c>, <c>season</c>, <c>hour</c>, or a span such as <c>15m</c> / <c>6h</c>.
 /// Gaps: <c>leave-missing</c> (default), <c>zero-fill</c>, <c>carry-forward</c>, <c>interpolate</c>.
 /// </summary>
@@ -105,10 +106,12 @@ public sealed record TransformDefinition(
         "groupby" => Transform.GroupBy(ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))]),
         "total" => Transform.Total(ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))]),
         "where" => Where(path),
+        "share" => By is { Count: > 0 } ? Transform.ShareOf([.. By.Select(d => new DimensionId(d))])
+            : throw new DashboardDefinitionException(path + ".by", "a share needs the dimensions it's a share across, e.g. [\"athlete\"]."),
         "range" => Min is null && Max is null
             ? throw new DashboardDefinitionException(path, "a range needs a min, a max, or both.")
             : Transform.WhereValue(Min, Max),
-        _ => throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a transform; use resample, rolling, groupBy, total, where or range."),
+        _ => throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a transform; use resample, rolling, groupBy, total, where, range or share."),
     };
 
     private ITransform Where(string path)
