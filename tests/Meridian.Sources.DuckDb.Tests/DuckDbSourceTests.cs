@@ -122,7 +122,8 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     private static readonly MetricDefinition WellnessDef = new(new MetricId("wellness"), "Wellness", new Unit("score"), "mean", [Athlete], TimeGrain.Daily, TimeKind.Local);
     private static readonly MetricDefinition LegacyDef = new(new MetricId("legacy"), "Legacy", new Unit("au"), "mean", [Athlete], TimeGrain.Instant);
     private static readonly MetricDefinition LegacyNyDef = new(new MetricId("legacy-ny"), "Legacy NY", new Unit("au"), "mean", [Athlete], TimeGrain.Instant);
-    private static readonly InMemoryMetricCatalog Catalog = new([LoadDef, WellnessDef, LegacyDef, LegacyNyDef]);
+    private static readonly MetricDefinition HrDef = new(new MetricId("hr"), "HR", new Unit("bpm"), "mean", [Athlete], TimeGrain.Instant);
+    private static readonly InMemoryMetricCatalog Catalog = new([LoadDef, HrDef, WellnessDef, LegacyDef, LegacyNyDef]);
 
     // Starts mid-day and ends mid-week so partial first/last buckets are exercised on both paths.
     private static readonly DateInterval Timeframe = new(
@@ -356,6 +357,94 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         for (int i = 0; i < specs.Count; i++) AssertSameView(fromTable[i], fromParquet[i]);
     }
 
+    private static PipelineSpec[] LoadAndHr(IPeriod? period = null, long[]? entities = null, DateInterval? timeframe = null)
+    {
+        PipelineSpec For(MetricDefinition m) => PipelineSpec.Create("test", m.Id,
+            [.. (entities ?? [1, 2, 3]).Select(id => new EntityRef(Athlete, id))], timeframe ?? Timeframe,
+            new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete),
+            period is null ? [] : [Transform.Resample(period, Aggregators.Mean, GapPolicy.ZeroFill)]);
+        return [For(LoadDef), For(HrDef)];
+    }
+
+    [Theory]
+    [InlineData(true)]   // weekly means pushed down
+    [InlineData(false)]  // raw rows
+    public async Task A_cold_multi_metric_request_is_one_source_query_and_matches_single_reports(bool pushdown)
+    {
+        var specs = LoadAndHr(pushdown ? Period.Week : null);
+        var counting = new CountingSource(Source());
+
+        var batched = await MeridianRuntime.InMemory(Catalog, counting).Engine.RunManyAsync(specs, In("Europe/London"));
+
+        var batch = Assert.Single(counting.Batches);
+        Assert.Equal(["hr", "load"], batch.Metrics);
+        Assert.Equal(pushdown, batch.Rollup);
+        Assert.Equal(0, counting.Raws + counting.Rollups); // nothing went the one-metric-at-a-time way
+
+        for (int i = 0; i < specs.Length; i++)
+        {
+            var alone = await MeridianRuntime.InMemory(Catalog, Source()).Engine.RunAsync(specs[i], In("Europe/London"));
+            AssertSameView(alone, batched[i]);
+        }
+    }
+
+    [Fact]
+    public async Task A_warm_multi_metric_request_touches_no_source()
+    {
+        var counting = new CountingSource(Source());
+        var engine = MeridianRuntime.InMemory(Catalog, counting).Engine;
+        await engine.RunManyAsync(LoadAndHr(Period.Week), ProjectionOptions.Default);
+        counting.Batches.Clear();
+
+        await engine.RunManyAsync(LoadAndHr(Period.Week), ProjectionOptions.Default);
+
+        Assert.Empty(counting.Batches);
+        Assert.Equal(0, counting.Raws + counting.Rollups);
+    }
+
+    [Fact]
+    public async Task A_partly_cached_request_fetches_only_what_is_missing_grouped_by_missing_set()
+    {
+        var counting = new CountingSource(Source());
+        var engine = MeridianRuntime.InMemory(Catalog, counting).Engine;
+        // Load is cached for athlete 1 only; HR not at all.
+        await engine.RunAsync(LoadAndHr(Period.Week, entities: [1])[0], ProjectionOptions.Default);
+        counting.Batches.Clear();
+
+        var views = await engine.RunManyAsync(LoadAndHr(Period.Week), ProjectionOptions.Default);
+
+        // Load misses {2, 3}; HR misses {1, 2, 3}: two different gaps, so two calls — and nothing refetched.
+        Assert.Equal(2, counting.Batches.Count);
+        Assert.Contains(counting.Batches, b => b.Metrics.SequenceEqual(["load"]) && b.Entities.SequenceEqual([2L, 3L]));
+        Assert.Contains(counting.Batches, b => b.Metrics.SequenceEqual(["hr"]) && b.Entities.SequenceEqual([1L, 2L, 3L]));
+
+        var fresh = await MeridianRuntime.InMemory(Catalog, Source()).Engine.RunManyAsync(LoadAndHr(Period.Week), ProjectionOptions.Default);
+        for (int i = 0; i < views.Count; i++) AssertSameView(fresh[i], views[i]);
+    }
+
+    [Fact]
+    public async Task Reports_over_different_timeframes_are_not_batched_together()
+    {
+        var early = new DateInterval(Timeframe.Start, Instant.FromUtc(new DateTime(2025, 2, 1)));
+        var specs = new[] { LoadAndHr(Period.Week)[0], LoadAndHr(Period.Week, timeframe: early)[1] };
+        var counting = new CountingSource(Source());
+
+        var views = await MeridianRuntime.InMemory(Catalog, counting).Engine.RunManyAsync(specs, ProjectionOptions.Default);
+
+        Assert.Empty(counting.Batches);       // each group has one metric: served the ordinary way
+        Assert.Equal(2, counting.Rollups);
+        Assert.Equal(2, views.Count);
+    }
+
+    [Fact]
+    public async Task A_source_without_batching_still_runs_many_reports()
+    {
+        var specs = LoadAndHr(Period.Month);
+        var views = await MeridianRuntime.InMemory(Catalog, new RawOnly(Source())).Engine.RunManyAsync(specs, ProjectionOptions.Default);
+        var batched = await MeridianRuntime.InMemory(Catalog, Source()).Engine.RunManyAsync(specs, ProjectionOptions.Default);
+        for (int i = 0; i < specs.Length; i++) AssertSameView(views[i], batched[i]);
+    }
+
     [Fact]
     public async Task Decimal_values_and_integer_ids_are_read_on_both_paths()
     {
@@ -468,10 +557,17 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
             inner.FetchAsync(metric, entities, timeframe, ct);
     }
 
-    private sealed class CountingSource(IRollupPointSource inner) : IRollupPointSource
+    private sealed class CountingSource(IRollupPointSource inner) : IRollupPointSource, IBatchPointSource
     {
         public int Raws { get; private set; }
         public int Rollups { get; private set; }
+        public List<(string[] Metrics, long[] Entities, bool Rollup)> Batches { get; } = [];
+
+        public Task<IReadOnlyDictionary<MetricId, PointBlock>> FetchManyAsync(IReadOnlyList<MetricDefinition> metrics, IReadOnlyList<EntityRef> entities, DateInterval timeframe, SourceRollup? rollup, CancellationToken ct = default)
+        {
+            lock (Batches) Batches.Add(([.. metrics.Select(m => m.Id.Value).Order()], [.. entities.Select(e => e.Id)], rollup is not null));
+            return ((IBatchPointSource)inner).FetchManyAsync(metrics, entities, timeframe, rollup, ct);
+        }
 
         public Task<PointBlock> FetchAsync(MetricDefinition metric, IReadOnlyList<EntityRef> entities, DateInterval timeframe, CancellationToken ct = default)
         {

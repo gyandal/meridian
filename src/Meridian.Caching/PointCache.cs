@@ -6,6 +6,11 @@ namespace Meridian.Caching;
 /// <summary>Loads data for the entities that missed the cache. Called with ONLY the missing set.</summary>
 public delegate Task<PointBlock> PointLoader(IReadOnlyList<EntityRef> missing, CancellationToken ct);
 
+/// <summary>Loads several scopes (typically several metrics) for the same missing entities in one call,
+/// returning a block per scope. A scope absent from the result is treated as having no data.</summary>
+public delegate Task<IReadOnlyDictionary<CacheScope, PointBlock>> BatchPointLoader(
+    IReadOnlyList<CacheScope> scopes, IReadOnlyList<EntityRef> missing, CancellationToken ct);
+
 /// <summary>
 /// The value layer of the cache: given a scope and a set of entities, serve what's cached per-entity
 /// and load only the misses, then merge. The per-entity partial-hit merge sits on top of a clean, taggable store,
@@ -21,9 +26,68 @@ public sealed class PointCache(IPointCacheStore store, IDataVersionStore version
         PointLoader loader,
         CancellationToken ct = default)
     {
+        var (hits, misses) = await ProbeAsync(scope, entities, ct).ConfigureAwait(false);
+
+        IReadOnlyDictionary<long, PointBlock> loaded = misses.Count == 0
+            ? new Dictionary<long, PointBlock>()
+            : await LoadMissesCoalesced(scope, misses, loader, ct).ConfigureAwait(false);
+
+        return Merge(entities, hits, loaded);
+    }
+
+    /// <summary>
+    /// The batched form of <see cref="GetOrLoadAsync"/>: several scopes over the same entities (e.g. several
+    /// metrics of one request). Each scope is probed per entity as usual; scopes missing the same entities
+    /// are loaded together in ONE loader call, so a cold multi-metric request costs one source round trip,
+    /// and slices already cached are never refetched. Returns a merged block per requested scope.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<CacheScope, PointBlock>> GetOrLoadManyAsync(
+        IReadOnlyList<CacheScope> scopes,
+        IReadOnlyList<EntityRef> entities,
+        BatchPointLoader loader,
+        CancellationToken ct = default)
+    {
+        var distinct = scopes.Distinct().ToList();
+        var probes = new Dictionary<CacheScope, (Dictionary<long, PointBlock> Hits, List<EntityRef> Misses)>();
+        foreach (var scope in distinct)
+        {
+            probes[scope] = await ProbeAsync(scope, entities, ct).ConfigureAwait(false);
+        }
+
+        // One loader call per distinct missing set: normally one (all cold) or none (all warm).
+        var groups = distinct
+            .Where(s => probes[s].Misses.Count > 0)
+            .GroupBy(s => string.Join(',', probes[s].Misses.Select(e => e.Id).Order()))
+            .Select(g => (Scopes: g.ToList(), Missing: probes[g.First()].Misses.OrderBy(e => e.Id).ToList()))
+            .ToList();
+
+        var loadedGroups = await Task.WhenAll(groups.Select(async g =>
+        {
+            var blocks = await loader(g.Scopes, g.Missing, ct).ConfigureAwait(false);
+            var stored = new List<(CacheScope Scope, IReadOnlyDictionary<long, PointBlock> Slices)>();
+            foreach (var scope in g.Scopes)
+            {
+                var block = blocks.TryGetValue(scope, out var b) ? b : PointBlock.Empty(Unit.None);
+                stored.Add((scope, await StoreAsync(scope, g.Missing, block, ct).ConfigureAwait(false)));
+            }
+            return stored;
+        })).ConfigureAwait(false);
+
+        var loaded = loadedGroups.SelectMany(x => x).ToDictionary(x => x.Scope, x => x.Slices);
+        var result = new Dictionary<CacheScope, PointBlock>();
+        foreach (var scope in distinct)
+        {
+            result[scope] = Merge(entities, probes[scope].Hits,
+                loaded.TryGetValue(scope, out var l) ? l : new Dictionary<long, PointBlock>());
+        }
+        return result;
+    }
+
+    private async Task<(Dictionary<long, PointBlock> Hits, List<EntityRef> Misses)> ProbeAsync(
+        CacheScope scope, IReadOnlyList<EntityRef> entities, CancellationToken ct)
+    {
         var hits = new Dictionary<long, PointBlock>();
         var misses = new List<EntityRef>();
-
         foreach (var entity in entities)
         {
             long version = versions.Current(new ChangeScope(scope.Tenant, scope.Metric, entity));
@@ -38,12 +102,13 @@ public sealed class PointCache(IPointCacheStore store, IDataVersionStore version
                 misses.Add(entity);
             }
         }
+        return (hits, misses);
+    }
 
-        IReadOnlyDictionary<long, PointBlock> loaded = misses.Count == 0
-            ? new Dictionary<long, PointBlock>()
-            : await LoadMissesCoalesced(scope, misses, loader, ct).ConfigureAwait(false);
-
-        // Merge, preserving the requested entity order.
+    /// <summary>Merge cached and freshly loaded slices, preserving the requested entity order.</summary>
+    private static PointBlock Merge(
+        IReadOnlyList<EntityRef> entities, Dictionary<long, PointBlock> hits, IReadOnlyDictionary<long, PointBlock> loaded)
+    {
         var merged = Template(hits, loaded);
         foreach (var entity in entities)
         {
@@ -80,6 +145,12 @@ public sealed class PointCache(IPointCacheStore store, IDataVersionStore version
         CacheScope scope, List<EntityRef> misses, PointLoader loader, CancellationToken ct)
     {
         var block = await loader(misses, ct).ConfigureAwait(false);
+        return await StoreAsync(scope, misses, block, ct).ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyDictionary<long, PointBlock>> StoreAsync(
+        CacheScope scope, IReadOnlyList<EntityRef> misses, PointBlock block, CancellationToken ct)
+    {
         var byEntity = SplitByEntity(block, scope.EntityDimension);
 
         var result = new Dictionary<long, PointBlock>();

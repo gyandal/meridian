@@ -235,11 +235,12 @@ public static class Tsbs
         return rows;
     }
 
-    /// <summary>One Meridian report per metric (reports are single-metric), run concurrently. Across-host
-    /// queries bucket per host (pushed down), then merge hosts per bucket with the same aggregator.</summary>
+    /// <summary>One Meridian report per metric (reports are single-metric), run as one batch: the engine
+    /// fetches every metric in a single source query. Across-host queries bucket per host (pushed down),
+    /// then merge hosts per bucket with the same aggregator.</summary>
     private static async Task<int> MeridianAsync(QueryType type, Instance q, MeridianRuntime runtime)
     {
-        var views = await Task.WhenAll(MetricsOf(type).Select(m => runtime.Engine.RunAsync(Spec(type, q, m), ProjectionOptions.Default)));
+        var views = await runtime.Engine.RunManyAsync([.. MetricsOf(type).Select(m => Spec(type, q, m))], ProjectionOptions.Default);
         return views.Sum(v => v.Series.Sum(s => s.Marks.Count));
     }
 

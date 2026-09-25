@@ -27,8 +27,8 @@ src/
   Meridian.Sources.MySql/  a real IPointSource over a MySQL datapoints table (MySqlConnector)
   Meridian.Sources.DuckDb/ IRollupPointSource over DuckDB tables or Parquet files, resample pushed into SQL
   Meridian.Semantics/   MetricDefinition / IMetricCatalog shape sketch
-tests/                  Core (15) + Time (28) + Transforms (12) + Caching (17) + Views (14) + Engine (5) + Hosts (11)
-                        + DuckDb source (798: pushdown-vs-engine parity across periods, zones, DST and wall-clock data)
+tests/                  Core (15) + Time (28) + Transforms (12) + Caching (18) + Views (14) + Engine (5) + Hosts (11)
+                        + DuckDb source (804: pushdown parity across periods, zones, DST, wall-clock data; batching)
 bench/
   Meridian.Benchmarks/  BenchmarkDotNet hot-path suite ([MemoryDiagnoser])
   Meridian.Bench.Scale/ generate millions–billions of rows as Parquet, time cold/warm/pushdown → bench/results/*.json
@@ -40,7 +40,7 @@ samples/
   dashboard-snapshot.html   a rendered ChartView gallery (static, shareable)
 ```
 
-`dotnet test` → 900 passing. Targets **net10.0**, nullable + warnings-as-errors.
+`dotnet test` → 907 passing. Targets **net10.0**, nullable + warnings-as-errors.
 Run the dashboard: `dotnet run --project src/Meridian.Hosts.Http` → http://localhost:5731.
 Time a source: `dotnet run -c Release --project samples/Meridian.Bench.Source` (add `-- --mysql "<conn>" <metric> 1,2,3` for a real DB).
 
@@ -101,6 +101,9 @@ The keystone that turns six libraries into "give a spec, get a chart".
   `ChartView`. Raw source data is cached (compact `PointBlock`); transforms/projection run per request.
 - **`IPointSource`** is the per-client data seam. `InMemoryPointSource` for tests; the Weather sample
   ships an `HttpWeatherSource` over the free Open-Meteo API — the *same engine* runs both.
+- **`RunManyAsync`** runs several reports at once; with an `IBatchPointSource` (DuckDB is one), reports
+  that share entities and timeframe — a dashboard of metrics — are fetched in one source query, and the
+  cache loads only what each is missing.
 - **`MeridianRuntime.InMemory`** wires the default composition (tagged store + version/tag invalidation
   + projector); swap the store for Redis and nothing else changes.
 
@@ -193,26 +196,29 @@ databases. Data from TSBS's own generator — `cpu-only`, 1,000 hosts × 3 days 
 
 | Query | SQL, TSBS wide schema | SQL, long layout | Meridian cold | Meridian warm |
 |---|---:|---:|---:|---:|
-| single-groupby-1-1-1 | 19 ms | 16 ms | 17 ms | 0.20 ms |
-| single-groupby-1-1-12 | 15 ms | 15 ms | 19 ms | 0.44 ms |
-| single-groupby-1-8-1 | 21 ms | 20 ms | 19 ms | 0.20 ms |
-| single-groupby-5-1-1 | 17 ms | 27 ms | 72 ms | 0.18 ms |
-| single-groupby-5-8-1 | 23 ms | 39 ms | 95 ms | 1.05 ms |
-| cpu-max-all-8 | 30 ms | 69 ms | 197 ms | 0.34 ms |
-| double-groupby-1 | 129 ms | 138 ms | 180 ms | 9.4 ms |
-| double-groupby-all | 265 ms | 1,270 ms | 1,866 ms | 121 ms |
+| single-groupby-1-1-1 | 17 ms | 17 ms | 17 ms | 0.21 ms |
+| single-groupby-1-1-12 | 15 ms | 16 ms | 19 ms | 0.47 ms |
+| single-groupby-1-8-1 | 18 ms | 18 ms | 19 ms | 0.23 ms |
+| single-groupby-5-1-1 | 18 ms | 28 ms | 29 ms | 0.19 ms |
+| single-groupby-5-8-1 | 23 ms | 37 ms | 41 ms | 1.57 ms |
+| cpu-max-all-8 | 27 ms | 67 ms | 72 ms | 0.41 ms |
+| double-groupby-1 | 130 ms | 129 ms | 178 ms | 9.6 ms |
+| double-groupby-all | 298 ms | 1,245 ms | 1,637 ms | 120 ms |
 
 What it says, plainly:
 
-- **Single-metric queries: Meridian cold ≈ the database; warm is ~80× faster.** Pushdown makes the first
-  run cost what the SQL costs.
-- **Multi-metric queries are Meridian's weak spot.** A Meridian report covers one metric, so a 5- or
-  10-metric TSBS query becomes 5 or 10 source queries, where SQL asks once. Against TSBS's wide schema
-  (one scan reads every metric) that costs 4–7× cold. Fetching several metrics in one source call is
-  the fix, and it's on the roadmap.
+- **Cold, Meridian costs about what the same query costs in SQL over the same data** — and warm it is
+  roughly 80× faster. Pushdown makes the first run cost what the SQL costs; the cache makes the rest free.
+- **Multi-metric queries are one source query.** A Meridian report covers one metric, but
+  `RunManyAsync` batches reports that share entities and timeframe into a single `metric IN (…)` fetch
+  (`IBatchPointSource`). Before batching, the 5- and 10-metric queries above took 72 / 95 / 197 ms cold;
+  now 29 / 41 / 72 ms — level with SQL on the long layout.
+- **The remaining gap is storage layout, not Meridian.** TSBS's wide schema stores all 10 metrics in one
+  row, so a 10-metric query reads a tenth as many rows as the long layout (one row per metric value)
+  that Meridian's source reads. A source over a wide table could close it.
 - **Large results make "warm" less free.** `double-groupby-all` returns 130,000 points; the cache spares
-  the database, but transforms and projection still run per request (121 ms). Caching finished views
-  for identical requests would close that.
+  the database, but transforms and projection still run per request (120 ms). Caching finished views for
+  identical requests would close that.
 - The published TSBS results for other databases ran on other hardware, so compare shapes, not absolute
   numbers. Reproduce with `tsbs-generate` and `tsbs-run` (see `BUILD.md`).
 
@@ -248,8 +254,8 @@ clock in a zone with a DST policy, or local dates). The full model is in [`docs/
 
 - The columnar/SIMD hot path — `PointBlock` exposes the SoA layout but `Resampler` still groups via
   dictionaries. This is where the benchmark-driven perf pass lands (Phase 1).
-- Multi-metric reports fetched in one source call (TSBS shows single-metric-per-report costs 4–7× on
-  5–10-metric queries), and caching finished views for identical requests with very large results.
+- Caching finished views for identical requests with very large results (TSBS `double-groupby-all`), and
+  a source over wide tables (a column per metric).
 - Bucketing by the local day where each event happened (instant + stored offset), for entities that
   travel across zones — the time model leaves room for it (`docs/TIME.md`).
 - Quartiles/SD/percentage aggregators, and the full metric catalog (source binding, change→tag).

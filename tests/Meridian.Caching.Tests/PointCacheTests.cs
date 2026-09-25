@@ -57,6 +57,42 @@ public class PointCacheTests
     }
 
     [Fact]
+    public async Task Batched_load_groups_scopes_by_their_missing_entities()
+    {
+        var cache = NewCache(out _, out _);
+        var a = Scope();
+        var b = Scope() with { Metric = "heart-rate" };
+        var calls = new List<(string[] Metrics, long[] Missing)>();
+        BatchPointLoader loader = (scopes, missing, ct) =>
+        {
+            calls.Add(([.. scopes.Select(s => s.Metric).Order()], [.. missing.Select(e => e.Id)]));
+            var result = new Dictionary<CacheScope, PointBlock>();
+            foreach (var s in scopes)
+            {
+                var builder = new PointBlock.Builder(new Unit("au"));
+                foreach (var e in missing) builder.Add(PointKey.Of(KeyPart.Entity(Player, e.Id)), Measurement.Of(e.Id), null);
+                result[s] = builder.Build();
+            }
+            return Task.FromResult<IReadOnlyDictionary<CacheScope, PointBlock>>(result);
+        };
+
+        await cache.GetOrLoadManyAsync([a], [E(1)], loader);                 // a: entity 1 cached
+        calls.Clear();
+
+        var blocks = await cache.GetOrLoadManyAsync([a, b], [E(1), E(2)], loader);
+
+        Assert.Equal(2, calls.Count); // a misses {2}, b misses {1, 2}
+        Assert.Contains(calls, c => c.Metrics.SequenceEqual(["training-load"]) && c.Missing.SequenceEqual([2L]));
+        Assert.Contains(calls, c => c.Metrics.SequenceEqual(["heart-rate"]) && c.Missing.SequenceEqual([1L, 2L]));
+        Assert.Equal([1.0, 2.0], blocks[a].Values.ToArray());   // merged in requested order
+        Assert.Equal([1.0, 2.0], blocks[b].Values.ToArray());
+
+        calls.Clear();
+        await cache.GetOrLoadManyAsync([a, b], [E(1), E(2)], loader);
+        Assert.Empty(calls);           // all warm
+    }
+
+    [Fact]
     public async Task Partial_hit_only_loads_the_missing_entities()
     {
         var cache = NewCache(out _, out _);

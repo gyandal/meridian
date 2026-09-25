@@ -28,7 +28,8 @@ public sealed record DuckDbSourceOptions(
 }
 
 /// <summary>
-/// An <see cref="IRollupPointSource"/> over DuckDB. Raw fetches stream rows for the requested entities;
+/// An <see cref="IRollupPointSource"/> and <see cref="IBatchPointSource"/> over DuckDB: any number of metrics
+/// come back from one query. Raw fetches stream rows for the requested entities;
 /// rollups push the calendar bucketing into SQL so only one row per (entity, bucket) leaves the database.
 ///
 /// Pushdown covers fixed sub-daily, day, week (any start day) and month buckets with the built-in aggregators, in any
@@ -37,7 +38,7 @@ public sealed record DuckDbSourceOptions(
 /// (<see cref="ZoneSql"/>), so a pushed-down result always equals the in-engine one; seasons fall back
 /// to a raw fetch.
 /// </summary>
-public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId entityDimension) : IRollupPointSource, IDisposable
+public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId entityDimension) : IRollupPointSource, IBatchPointSource, IDisposable
 {
     // An in-memory database (e.g. one that queries Parquet files) is created once for the source's lifetime
     // and each query gets a duplicated connection to it: creating a DuckDB database costs far more than a
@@ -64,20 +65,12 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         [Aggregators.Last] = "arg_max({v}, {t}) FILTER (WHERE {v} IS NOT NULL)",
     };
 
-    public Task<PointBlock> FetchAsync(
+    public async Task<PointBlock> FetchAsync(
         MetricDefinition metric,
         IReadOnlyList<EntityRef> entities,
         DateInterval timeframe,
-        CancellationToken ct = default)
-    {
-        var o = options;
-        var sql =
-            // Values may be DECIMAL or INTEGER in real schemas (fares, counts): DuckDB casts, we read doubles.
-            $"SELECT {o.EntityColumn}, CAST({o.ValueColumn} AS DOUBLE), {o.TimestampColumn} FROM {o.Relation} " +
-            Where(entities) +
-            $" ORDER BY {o.EntityColumn}, {o.TimestampColumn}";
-        return QueryAsync(sql, metric, timeframe, entities, o.Time.Axis, raw: true, ct);
-    }
+        CancellationToken ct = default) =>
+        (await FetchManyAsync([metric], entities, timeframe, rollup: null, ct).ConfigureAwait(false))[metric.Id];
 
     public bool CanRollup(MetricDefinition metric, SourceRollup rollup)
     {
@@ -87,19 +80,44 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         return wallClockConvertible && Truncate(rollup, "x") is not null && SqlAggregates.ContainsKey(rollup.Aggregator);
     }
 
-    public Task<PointBlock> FetchRollupAsync(
+    public async Task<PointBlock> FetchRollupAsync(
         MetricDefinition metric,
         IReadOnlyList<EntityRef> entities,
         DateInterval timeframe,
         SourceRollup rollup,
+        CancellationToken ct = default) =>
+        (await FetchManyAsync([metric], entities, timeframe, rollup, ct).ConfigureAwait(false))[metric.Id];
+
+    /// <summary>
+    /// Every fetch runs through here: one query for all requested metrics (<c>metric IN (…)</c>), split by
+    /// metric on the way out. Raw rows when <paramref name="rollup"/> is null, pushed-down buckets otherwise.
+    /// </summary>
+    public Task<IReadOnlyDictionary<MetricId, PointBlock>> FetchManyAsync(
+        IReadOnlyList<MetricDefinition> metrics,
+        IReadOnlyList<EntityRef> entities,
+        DateInterval timeframe,
+        SourceRollup? rollup,
         CancellationToken ct = default)
     {
-        if (!CanRollup(metric, rollup))
+        var o = options;
+        if (rollup is null)
         {
-            throw new NotSupportedException($"Cannot push down a '{rollup.Period.Name}' / '{rollup.Aggregator.Name}' rollup of {options.Time} data.");
+            var raw =
+                // Values may be DECIMAL or INTEGER in real schemas (fares, counts): DuckDB casts, we read doubles.
+                $"SELECT {o.MetricColumn}, {o.EntityColumn}, CAST({o.ValueColumn} AS DOUBLE), {o.TimestampColumn} FROM {o.Relation} " +
+                Where(entities, metrics.Count) +
+                " ORDER BY 1, 2, 4";
+            return QueryAsync(raw, metrics, timeframe, entities, o.Time.Axis, raw: true, ct);
         }
 
-        var o = options;
+        foreach (var metric in metrics)
+        {
+            if (!CanRollup(metric, rollup))
+            {
+                throw new NotSupportedException($"Cannot push down a '{rollup.Period.Name}' / '{rollup.Aggregator.Name}' rollup of {o.Time} data.");
+            }
+        }
+
         var time = o.Time;
         var ts = o.TimestampColumn;
 
@@ -134,16 +152,16 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
 
         // A bucket whose values are all NULL must come back as missing (not 0 or dropped) to match the engine.
         var sql =
-            $"SELECT {o.EntityColumn}, " +
+            $"SELECT {o.MetricColumn}, {o.EntityColumn}, " +
             $"CASE WHEN count({o.ValueColumn}) = 0 THEN NULL ELSE CAST({aggregate} AS DOUBLE) END, " +
             $"CAST({bucket} AS TIMESTAMP) AS bucket " +
             $"FROM {o.Relation} " +
-            Where(entities) + exact +
-            $" GROUP BY 1, 3 ORDER BY 1, 3";
+            Where(entities, metrics.Count) + exact +
+            $" GROUP BY 1, 2, 4 ORDER BY 1, 2, 4";
 
         // Buckets are local (docs/TIME.md): tagged with the grain, and with the zone that drew the boundaries.
         var zone = time.Kind == TimeKind.Instant ? rollup.Calendar.Zone.Id : null;
-        return QueryAsync(sql, metric, timeframe, entities, TimeAxis.Local(rollup.Period.Name, zone), raw: false, ct, wallRange);
+        return QueryAsync(sql, metrics, timeframe, entities, TimeAxis.Local(rollup.Period.Name, zone), raw: false, ct, wallRange);
     }
 
     /// <summary>SQL for the start of the bucket containing the wall-clock expression, or null for periods
@@ -168,11 +186,13 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         return null;
     }
 
-    private string Where(IReadOnlyList<EntityRef> entities)
+    private string Where(IReadOnlyList<EntityRef> entities, int metricCount)
     {
         var o = options;
         var sb = new StringBuilder();
-        sb.Append($"WHERE {o.MetricColumn} = $metric AND {o.TimestampColumn} >= $start AND {o.TimestampColumn} < $end AND {o.EntityColumn} IN (");
+        sb.Append($"WHERE {o.MetricColumn} ");
+        sb.Append(metricCount == 1 ? "= $m0" : $"IN ({string.Join(", ", Enumerable.Range(0, metricCount).Select(i => "$m" + i))})");
+        sb.Append($" AND {o.TimestampColumn} >= $start AND {o.TimestampColumn} < $end AND {o.EntityColumn} IN (");
         for (int i = 0; i < entities.Count; i++)
         {
             if (i > 0) sb.Append(',');
@@ -181,21 +201,30 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         return sb.Append(')').ToString();
     }
 
-    private async Task<PointBlock> QueryAsync(
-        string sql, MetricDefinition metric, DateInterval timeframe, IReadOnlyList<EntityRef> entities,
+    /// <summary>Runs a query whose columns are (metric, entity, value, time) and splits it into a block per metric.</summary>
+    private async Task<IReadOnlyDictionary<MetricId, PointBlock>> QueryAsync(
+        string sql, IReadOnlyList<MetricDefinition> metrics, DateInterval timeframe, IReadOnlyList<EntityRef> entities,
         TimeAxis axis, bool raw, CancellationToken ct, (DateTime Start, DateTime End)? wallRange = null)
     {
-        var builder = new PointBlock.Builder(metric.Unit, axis);
-        if (entities.Count == 0) return builder.Build();
+        var builders = metrics.DistinctBy(m => m.Id).ToDictionary(m => m.Id.Value, m => new PointBlock.Builder(m.Unit, axis));
+        if (entities.Count > 0 && builders.Count > 0)
+        {
+            await ReadAsync(sql, metrics, timeframe, raw, wallRange, builders, ct).ConfigureAwait(false);
+        }
+        return builders.ToDictionary(kv => new MetricId(kv.Key), kv => kv.Value.Build());
+    }
 
+    private async Task ReadAsync(
+        string sql, IReadOnlyList<MetricDefinition> metrics, DateInterval timeframe, bool raw,
+        (DateTime Start, DateTime End)? wallRange, Dictionary<string, PointBlock.Builder> builders, CancellationToken ct)
+    {
         var time = options.Time;
         var (start, end) = time.StoredRange(timeframe);
 
         await using var conn = await ConnectAsync(ct).ConfigureAwait(false);
-
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
-        cmd.Parameters.Add(new DuckDBParameter("metric", metric.Id.Value));
+        for (int i = 0; i < metrics.Count; i++) cmd.Parameters.Add(new DuckDBParameter("m" + i, metrics[i].Id.Value));
         cmd.Parameters.Add(new DuckDBParameter("start", start));
         cmd.Parameters.Add(new DuckDBParameter("end", end));
         if (sql.Contains("$utcStart", StringComparison.Ordinal))
@@ -212,22 +241,30 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         PointKey key = default;
         long currentId = long.MinValue;
+        string? currentMetric = null;
+        PointBlock.Builder builder = null!;
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
             // Raw rows are normalised by the column's StoredTime; rollup buckets are already local wall-clock.
-            long ticks = raw ? ReadTicks(reader.GetValue(2), time) : ToDateTime(reader.GetValue(2)).Ticks;
+            long ticks = raw ? ReadTicks(reader.GetValue(3), time) : ToDateTime(reader.GetValue(3)).Ticks;
             if (raw && time.NeedsExactFilter && (ticks < timeframe.Start.UtcTicks || ticks >= timeframe.End.UtcTicks)) continue;
 
-            long id = reader.GetInt64(0);
+            var metric = Convert.ToString(reader.GetValue(0), CultureInfo.InvariantCulture)!;
+            long id = reader.GetInt64(1);
+            if (metric != currentMetric)
+            {
+                currentMetric = metric;
+                builder = builders[metric];
+                currentId = long.MinValue;
+            }
             if (id != currentId)
             {
                 currentId = id;
                 key = PointKey.Of(KeyPart.Entity(entityDimension, id));
             }
-            var measure = reader.IsDBNull(1) ? Measurement.Missing : Measurement.Of(reader.GetDouble(1));
+            var measure = reader.IsDBNull(2) ? Measurement.Missing : Measurement.Of(reader.GetDouble(2));
             builder.Add(key, measure, new Instant(ticks));
         }
-        return builder.Build();
     }
 
     private async Task<DuckDBConnection> ConnectAsync(CancellationToken ct)
