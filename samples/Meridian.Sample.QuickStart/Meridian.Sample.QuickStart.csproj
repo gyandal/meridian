@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Meridian.Engine/Meridian.Engine.csproj" />
+    <ProjectReference Include="../../src/Meridian.Sources.DuckDb/Meridian.Sources.DuckDb.csproj" />
+    <ProjectReference Include="../../src/Meridian.Views.Json/Meridian.Views.Json.csproj" />
+  </ItemGroup>
+</Project>

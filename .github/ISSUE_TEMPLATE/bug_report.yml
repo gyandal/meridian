@@ -1,0 +1,32 @@
+name: Bug report
+description: Something produces a wrong result, throws, or doesn't build.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The smallest spec, data and code that shows it. For time bugs, include the calendar zone and the stored timestamps.
+      render: csharp
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Meridian version
+      placeholder: 0.1.0-preview.2
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, .NET version, and the data source (DuckDB, MySQL, your own).
+      placeholder: Windows 11, .NET 10.0.3, DuckDB source over Parquet

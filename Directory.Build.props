@@ -15,8 +15,12 @@
     <Authors>Stephen Wood</Authors>
     <Copyright>Copyright (c) 2026 Stephen Wood</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <Description>Meridian — longitudinal datapoints → composable transforms → chart-agnostic views, with pluggable caching.</Description>
-    <PackageTags>analytics;reporting;time-series;longitudinal;metrics;semantic-layer</PackageTags>
+    <Description>Meridian: embeddable, time-correct reporting over your own data — metrics, transforms, caching and chart-agnostic views for .NET.</Description>
+    <PackageTags>analytics;reporting;time-series;longitudinal;metrics;semantic-layer;duckdb;timezone</PackageTags>
+    <PackageProjectUrl>https://github.com/gyandal/meridian</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/gyandal/meridian</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReleaseNotes>https://github.com/gyandal/meridian/blob/main/CHANGELOG.md</PackageReleaseNotes>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
@@ -26,6 +30,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" Condition="'$(IsPackable)' == 'true'" />
+    <None Include="$(MSBuildThisFileDirectory)docs/nuget/README.md" Pack="true" PackagePath="\" Visible="false" Condition="'$(IsPackable)' == 'true'" />
   </ItemGroup>
 </Project>

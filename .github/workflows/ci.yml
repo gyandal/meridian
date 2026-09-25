@@ -44,6 +44,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: dotnet pack -c Release --no-build -o artifacts
 
+      # The README's quick start, executed so the documented example can't rot.
+      - name: Quick start sample
+        if: matrix.os == 'ubuntu-latest'
+        run: dotnet run -c Release --no-build --project samples/Meridian.Sample.QuickStart
+
       # Keeps the scale harness working end to end. Tiny data; timings on shared runners are not comparable.
       - name: Scale benchmark (smoke)
         if: matrix.os == 'ubuntu-latest'

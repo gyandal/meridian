@@ -15,7 +15,7 @@ namespace Meridian.Hosts.Mcp;
 /// learns what it can ask) and <c>query</c> (a bounded, typed request → a finished ChartView). Because
 /// a query is a typed spec and not free SQL, every call is safe, auditable, and cacheable. This class is
 /// transport-agnostic; a real MCP server (stdio/SSE) binds these two methods as tools — the protocol
-/// wrapper is thin and deliberately out of the spike.
+/// wrapper is thin and lives in the host that serves it.
 /// </summary>
 public sealed class MeridianTools(IMetricCatalog catalog, ReportEngine engine, DimensionId entityDimension, string tenant)
 {

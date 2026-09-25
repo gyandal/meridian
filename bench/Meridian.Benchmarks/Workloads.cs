@@ -6,10 +6,10 @@ using Meridian.Transforms;
 namespace Meridian.Benchmarks;
 
 /// <summary>
-/// The hot paths the plan's §15 calls out. Run with:
+/// The in-engine hot paths (see docs/BENCHMARKS.md). Run with:
 ///   dotnet run -c Release --project bench/Meridian.Benchmarks
 /// [MemoryDiagnoser] makes allocations a first-class number — the goal is near-zero on aggregation.
-/// These are spike-stage baselines; the columnar/SIMD pass will be measured against them.
+/// These are the baselines a columnar/SIMD pass will be measured against.
 /// </summary>
 [MemoryDiagnoser]
 public class Workloads

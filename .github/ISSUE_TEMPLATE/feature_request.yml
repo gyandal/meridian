@@ -1,0 +1,21 @@
+name: Feature request
+description: A new capability, source, aggregator or transform.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to report on, and what's missing or awkward today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you'd like
+      description: How you imagine it working — an API sketch is great.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Your data (store, volume, time zones), and anything you've tried.
