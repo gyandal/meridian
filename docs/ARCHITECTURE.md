@@ -82,6 +82,26 @@ Attributes rarely sit on the fact row: the venue belongs to the match, a player'
 Meridian doesn't model joins; make the source's relation a view that joins them onto each row — for
 time-varying attributes, the value *as of the row's date* — and map the resulting columns.
 
+## Derived metrics
+
+A derived metric is defined once in the catalog from stored ones — goals per 90 is
+`MetricDefinition.Ratio(goals-per-90, …, numerator: goals, denominator: minutes, scale: 90, …)` — and then
+used in any report like a stored metric. The rules that make it right:
+
+- **Ratio of totals.** Each input is aggregated with the formula's aggregation (sum) through every
+  aggregating step of the report — resample, rolling window, `GroupBy`, `Total` — and the division happens
+  after the last of them. "Goals per 90 by venue per month" divides monthly goal totals per venue by monthly
+  minutes per venue; it never averages per-match ratios (where a one-goal, ten-minute cameo would swamp a
+  season). Transforms after the last aggregation apply to the ratio.
+- **No rows is zero, no denominator is no value.** Goals are events, so a bucket with minutes but no goal
+  rows is 0 goals per 90. A bucket with no (or zero) minutes has no value, even with a zero-fill gap policy.
+- **Inputs are ordinary fetches.** Each input goes through the cache, pushdown and batching like any
+  report, so goals and minutes arrive in one query and are shared with plain goals and minutes charts.
+  A derived chart's cache entry depends on its inputs' data versions, so it's rebuilt when either changes.
+
+The catalog rejects bad definitions when it's built: unknown or derived inputs, mismatched time kinds, and
+dimensions an input can't be sliced by.
+
 ## Caching and invalidation
 
 The store contract is small: a backend implements get/set/remove (`IKeyValueStore`), and the

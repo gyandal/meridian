@@ -12,11 +12,18 @@ cases are welcome as issues.
 - Caching: per-entity slices with partial hits, batched loads, version and tag invalidation, and a
   finished-view cache
 - Engine: aggregation pushdown, multi-metric batching (`RunManyAsync`)
+- Dimensions (slice a metric by venue, competition…; declarative `GroupBy` / `Total`) and derived metrics
+  (ratio of totals, e.g. goals per 90)
 - Sources: DuckDB (tables and Parquet in place, long or wide layout), MySQL
 - Hosts: REST API with a dashboard, an agent (MCP-style) tool surface
 - Benchmarks: synthetic to 1B rows, NYC taxi, TSBS ([BENCHMARKS.md](docs/BENCHMARKS.md))
 
 ## Next
+
+- **Multi-series charts** — several metrics (and derived ones) on one chart, with a second value axis.
+- **Dashboards** — shared context (entities, timeframe, zone) across charts, focus on one entity, and a
+  dashboard demo.
+- **More formulas** — difference, sum and product of metrics, and percentages of a total.
 
 - **More sources** — PostgreSQL / TimescaleDB, SQL Server, ClickHouse; each with pushdown where exact.
 - **Comparisons over time** — year-on-year and season-phase-aligned comparison ("round 5 this season vs

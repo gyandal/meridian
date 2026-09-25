@@ -72,6 +72,20 @@ public sealed class DuckDbFixture : IDisposable
             FROM range(1, 4) AS e(entity_id), range(0, 80) AS m(m);
             CREATE TABLE goals_wide AS SELECT entity_id, ts, value AS goals, venue, competition FROM goals;
 
+            -- Appearances: one minutes row per match; goal rows only when a goal was scored (events).
+            CREATE TABLE apps AS
+            WITH m AS (
+                SELECT e.entity_id, TIMESTAMP '2025-01-04 15:00:00' + to_days(g.g * 7) AS ts,
+                       CASE WHEN hash(e.entity_id * 17 + g.g) % 2 = 0 THEN 'Home' ELSE 'Away' END AS venue,
+                       CAST(10 + hash(e.entity_id * 29 + g.g) % 81 AS DOUBLE) AS minutes,
+                       CAST(hash(e.entity_id * 31 + g.g) % 4 AS DOUBLE) - 1 AS goals
+                FROM range(1, 4) AS e(entity_id), range(0, 22) AS g(g)
+                WHERE hash(e.entity_id * 7 + g.g) % 5 <> 0 AND NOT (e.entity_id = 3 AND g.g BETWEEN 9 AND 14)
+            )
+            SELECT entity_id, 'minutes' AS metric, ts, minutes AS value, venue FROM m
+            UNION ALL
+            SELECT entity_id, 'goals', ts, goals, venue FROM m WHERE goals > 0;
+
             CREATE TABLE typed (entity_id INTEGER, metric VARCHAR, ts TIMESTAMP, value DECIMAL(10, 2));
             INSERT INTO typed VALUES (1, 'typed', TIMESTAMP '2025-02-01 10:00', 12.50), (1, 'typed', TIMESTAMP '2025-02-02 10:00', 7.25);
 
@@ -615,6 +629,149 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         var byVenue = new SourceRollup(Period.Month, Aggregators.Sum, CalendarContext.Default, [Venue]);
         Assert.False(blind.CanRollup(GoalsDef, byVenue));
         Assert.True(GoalsSource().CanRollup(GoalsDef, byVenue));
+    }
+
+    private static readonly MetricDefinition AppGoals = new(new MetricId("goals"), "Goals", new Unit(""), "sum", [Athlete, Venue], TimeGrain.Instant);
+    private static readonly MetricDefinition AppMinutes = new(new MetricId("minutes"), "Minutes", new Unit("min"), "sum", [Athlete, Venue], TimeGrain.Instant);
+    private static readonly MetricDefinition GoalsPer90 = MetricDefinition.Ratio(
+        new MetricId("goals-per-90"), "Goals per 90", new Unit("/90"), AppGoals.Id, AppMinutes.Id, 90, [Athlete, Venue]);
+    private static readonly InMemoryMetricCatalog AppCatalog = new([AppGoals, AppMinutes, GoalsPer90]);
+    private static readonly DateInterval FirstHalf = new(Instant.FromUtc(new DateTime(2025, 1, 1)), Instant.FromUtc(new DateTime(2025, 7, 1)));
+
+    private DuckDbPointSource AppSource() =>
+        new(new DuckDbSourceOptions(db.ConnectionString, Relation: "apps", DimensionColumns: new Dictionary<string, string> { ["venue"] = "venue" }), Athlete);
+
+    private static PipelineSpec AppReport(MetricId metric, ViewSpec view, params ITransform[] transforms) => PipelineSpec.Create(
+        "club", metric, [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2), new EntityRef(Athlete, 3)], FirstHalf, view, transforms);
+
+    private double SqlRatio(string where) =>
+        db.Scalar($"SELECT CAST(round(1e9 * 90 * coalesce(sum(value) FILTER (WHERE metric = 'goals'), 0) / sum(value) FILTER (WHERE metric = 'minutes')) AS BIGINT) FROM apps WHERE {where}") / 1e9;
+
+    [Fact]
+    public async Task A_derived_ratio_divides_totals_not_averages_of_ratios()
+    {
+        // The report asks for a mean — meaningless for a ratio — and still gets sum(goals) / sum(minutes) × 90.
+        var report = AppReport(GoalsPer90.Id, new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete)), Transform.Total(Aggregators.Mean, Athlete));
+        var view = await MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        var perPlayer = view.Series[0].Marks.ToDictionary(m => m.Label, m => m.Value!.Value);
+        foreach (var athlete in new[] { 1, 2, 3 })
+        {
+            Assert.Equal(SqlRatio($"entity_id = {athlete} AND ts < TIMESTAMP '2025-07-01'"), perPlayer[athlete.ToString()], 9);
+        }
+        Assert.Equal("/90", view.Axes[1].Unit);
+    }
+
+    [Fact]
+    public async Task Goals_per_90_by_venue_per_month_is_one_query_and_matches_sql()
+    {
+        var report = AppReport(GoalsPer90.Id, new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Venue),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing), Transform.GroupBy(Aggregators.Sum, Venue))
+            .WithDimensions(Venue);
+
+        var counting = new CountingSource(AppSource());
+        var viaSql = await MeridianRuntime.InMemory(AppCatalog, counting).Engine.RunAsync(report, ProjectionOptions.Default);
+        var inEngine = await MeridianRuntime.InMemory(AppCatalog, new RawOnly(AppSource())).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        var batch = Assert.Single(counting.Batches); // goals and minutes, bucketed and grouped in one query
+        Assert.Equal(["goals", "minutes"], batch.Metrics);
+        Assert.True(batch.Rollup);
+        AssertSameView(inEngine, viaSql);
+
+        var march = viaSql.Series.Single(s => s.Name == "Home").Marks.Single(m => m.Label == "2025-03");
+        Assert.Equal(SqlRatio("venue = 'Home' AND ts >= TIMESTAMP '2025-03-01' AND ts < TIMESTAMP '2025-04-01'"), march.Value!.Value, 9);
+    }
+
+    [Fact]
+    public async Task No_goals_is_zero_and_no_minutes_is_no_value()
+    {
+        var report = AppReport(GoalsPer90.Id, new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete),
+            Transform.Resample(Period.Week, Aggregators.Sum, GapPolicy.ZeroFill));
+        var view = await MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        long scorelessMatches = db.Scalar("""
+            SELECT count(*) FROM apps m WHERE metric = 'minutes' AND ts < TIMESTAMP '2025-07-01'
+              AND NOT EXISTS (SELECT 1 FROM apps g WHERE g.metric = 'goals' AND g.entity_id = m.entity_id AND g.ts = m.ts)
+            """);
+        long weeksPlayed = db.Scalar("SELECT count(*) FROM apps WHERE metric = 'minutes' AND ts < TIMESTAMP '2025-07-01'");
+        var marks = view.Series.SelectMany(s => s.Marks).ToList();
+
+        Assert.True(scorelessMatches > 0);
+        Assert.Equal(scorelessMatches, marks.Count(m => m.Value == 0));   // played, didn't score: 0, not a gap
+        Assert.Equal(weeksPlayed, marks.Count);                            // weeks without minutes (athlete 3's break): no value, even zero-filled
+    }
+
+    [Fact]
+    public async Task A_rolling_ratio_is_rolling_goals_over_rolling_minutes()
+    {
+        ITransform[] steps = [Transform.Resample(Period.Day, Aggregators.Sum, GapPolicy.LeaveMissing), Transform.Rolling(TimeSpan.FromDays(28), Aggregators.Mean)];
+        var engine = MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine;
+        var view = new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete);
+
+        var ratio = await engine.RunAsync(AppReport(GoalsPer90.Id, view, steps), ProjectionOptions.Default);
+        ITransform[] sums = [Transform.Resample(Period.Day, Aggregators.Sum, GapPolicy.LeaveMissing), Transform.Rolling(TimeSpan.FromDays(28), Aggregators.Sum)];
+        var goals = await engine.RunAsync(AppReport(AppGoals.Id, view, sums), ProjectionOptions.Default);
+        var minutes = await engine.RunAsync(AppReport(AppMinutes.Id, view, sums), ProjectionOptions.Default);
+
+        var goalsAt = goals.Series.SelectMany(s => s.Marks.Select(m => ((s.Name, m.At), m.Value!.Value))).ToDictionary();
+        foreach (var series in minutes.Series)
+        foreach (var m in series.Marks)
+        {
+            double expected = goalsAt.GetValueOrDefault((series.Name, m.At)) / m.Value!.Value * 90;
+            var actual = ratio.Series.Single(s => s.Name == series.Name).Marks.Single(r => r.At == m.At).Value!.Value;
+            Assert.Equal(expected, actual, 9);
+        }
+    }
+
+    [Fact]
+    public async Task Transforms_after_the_last_aggregation_apply_to_the_ratio()
+    {
+        var report = AppReport(GoalsPer90.Id, new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete)),
+            Transform.Total(Aggregators.Sum, Athlete), Transform.Named("prolific", Transform.Filter(p => p.Measure.Value >= 0.5)));
+        var all = await MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(
+            AppReport(GoalsPer90.Id, new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete)), Transform.Total(Aggregators.Sum, Athlete)), ProjectionOptions.Default);
+        var filtered = await MeridianRuntime.InMemory(AppCatalog, AppSource()).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        Assert.Equal(all.Series[0].Marks.Where(m => m.Value >= 0.5).Select(m => m.Label), filtered.Series[0].Marks.Select(m => m.Label));
+    }
+
+    [Fact]
+    public async Task A_derived_chart_reuses_the_goals_and_minutes_its_dashboard_already_loaded()
+    {
+        var counting = new CountingSource(AppSource());
+        var engine = MeridianRuntime.InMemory(AppCatalog, counting).Engine;
+        var monthly = new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete);
+        ITransform month = Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing);
+
+        await engine.RunManyAsync([AppReport(AppGoals.Id, monthly, month), AppReport(AppMinutes.Id, monthly, month)], ProjectionOptions.Default);
+        int calls = counting.Batches.Count + counting.Rollups + counting.Raws;
+
+        await engine.RunAsync(AppReport(GoalsPer90.Id, monthly, month), ProjectionOptions.Default);
+        Assert.Equal(calls, counting.Batches.Count + counting.Rollups + counting.Raws); // no new source query
+    }
+
+    [Fact]
+    public async Task A_derived_chart_is_rebuilt_when_an_input_changes()
+    {
+        var runtime = MeridianRuntime.InMemory(AppCatalog, AppSource());
+        var report = AppReport(GoalsPer90.Id, new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete)), Transform.Total(Aggregators.Sum, Athlete));
+
+        var first = await runtime.Engine.RunAsync(report, ProjectionOptions.Default);
+        Assert.Same(first, await runtime.Engine.RunAsync(report, ProjectionOptions.Default));
+
+        await runtime.Invalidator.InvalidateAsync(new ChangeScope("club", "goals", new EntityRef(Athlete, 2)));
+        Assert.NotSame(first, await runtime.Engine.RunAsync(report, ProjectionOptions.Default));
+    }
+
+    [Fact]
+    public void Bad_derived_metrics_are_rejected_when_the_catalog_is_built()
+    {
+        var weather = new DimensionId("weather");
+        Assert.Contains("isn't in the catalog", Assert.Throws<ArgumentException>(() => new InMemoryMetricCatalog([AppGoals, GoalsPer90])).Message);
+        var nested = MetricDefinition.Ratio(new MetricId("nested"), "Nested", Unit.None, GoalsPer90.Id, AppMinutes.Id, 1, [Athlete]);
+        Assert.Contains("itself derived", Assert.Throws<ArgumentException>(() => new InMemoryMetricCatalog([AppGoals, AppMinutes, GoalsPer90, nested])).Message);
+        var bySky = MetricDefinition.Ratio(new MetricId("by-sky"), "By sky", Unit.None, AppGoals.Id, AppMinutes.Id, 1, [Athlete, weather]);
+        Assert.Contains("can't", Assert.Throws<ArgumentException>(() => new InMemoryMetricCatalog([AppGoals, AppMinutes, bySky])).Message);
     }
 
     [Fact]

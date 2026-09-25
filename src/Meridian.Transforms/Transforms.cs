@@ -59,8 +59,12 @@ public static class Transform
 /// colours) doesn't depend on the order rows arrived in — cache, pushdown or raw fetch. A group with no
 /// present values is missing.
 /// </summary>
-internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by, bool keepTime) : ITransform, ICacheIdentity
+internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by, bool keepTime) : IAggregatingTransform, ICacheIdentity
 {
+    public IAggregator Aggregator => aggregator;
+
+    public ITransform WithAggregator(IAggregator other) => new GroupByTransform(other, by, keepTime);
+
     private readonly HashSet<DimensionId> _by = [.. by];
 
     public string CacheIdentity =>
@@ -145,8 +149,12 @@ internal sealed class RekeyTransform(Func<PointKey, PointKey> reproject) : ITran
     }
 }
 
-internal sealed class ReduceTransform(Func<Point, PointKey> keySelector, IAggregator aggregator) : ITransform
+internal sealed class ReduceTransform(Func<Point, PointKey> keySelector, IAggregator aggregator) : IAggregatingTransform
 {
+    public IAggregator Aggregator => aggregator;
+
+    public ITransform WithAggregator(IAggregator other) => new ReduceTransform(keySelector, other);
+
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
         var groups = new Dictionary<PointKey, List<double>>();
@@ -210,7 +218,7 @@ internal sealed class PerGroupTransform(Func<Point, PointKey> keySelector, ITran
 }
 
 /// <summary>Public so the engine can recognise a leading resample and push it down to a capable source.</summary>
-public sealed class ResampleTransform(IPeriod period, IAggregator aggregator, GapPolicy gap) : ITransform, ICacheIdentity
+public sealed class ResampleTransform(IPeriod period, IAggregator aggregator, GapPolicy gap) : IAggregatingTransform, ICacheIdentity
 {
     public IPeriod Period { get; } = period;
     public IAggregator Aggregator { get; } = aggregator;
@@ -218,12 +226,18 @@ public sealed class ResampleTransform(IPeriod period, IAggregator aggregator, Ga
 
     public string CacheIdentity => $"resample({Period.Name},{Aggregator.Name},{Gap})";
 
+    public ITransform WithAggregator(IAggregator other) => new ResampleTransform(Period, other, Gap);
+
     public PointBlock Apply(PointBlock input, TransformContext ctx) =>
         Resampler.Resample(input, Period, Aggregator, Gap, ctx.Calendar);
 }
 
-internal sealed class RollingTransform(TimeSpan window, IAggregator aggregator) : ITransform, ICacheIdentity
+internal sealed class RollingTransform(TimeSpan window, IAggregator aggregator) : IAggregatingTransform, ICacheIdentity
 {
+    public IAggregator Aggregator => aggregator;
+
+    public ITransform WithAggregator(IAggregator other) => new RollingTransform(window, other);
+
     private readonly long _windowTicks = window.Ticks;
 
     public string CacheIdentity => $"rolling({_windowTicks},{aggregator.Name})";
