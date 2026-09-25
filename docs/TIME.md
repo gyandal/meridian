@@ -50,6 +50,12 @@ Consequences:
 
 Rolling windows are durations (a 28-day window is 28 × 24 h) and keep the kind of their input.
 
+Sub-daily buckets (`Period.Every(TimeSpan.FromMinutes(5))`, `Period.Hour`) follow the same rule: they
+are positions on the local clock, aligned to midnight. So on the night clocks go back, the repeated hour
+is one local bucket holding two hours of readings, and on the night they go forward the skipped hour has
+no bucket. When elapsed-time windows matter more than the local clock (infrastructure metrics, say),
+bucket with a UTC calendar.
+
 ## The calendar
 
 `CalendarContext` is the report's calendar: a time zone, the first day of the week, and the domain's
@@ -103,7 +109,9 @@ DST change is compared on the stored wall clock (so Parquet row groups can be pr
 bucketed in its own zone is bucketed as stored. On the NYC taxi data this brings DST-correct pushdown to
 within ~7% of a naive `date_trunc` query.
 
-Policies that `Reject` times, and season buckets, fall back to the engine. Parity tests run every
+Policies that `Reject` times, and season buckets, fall back to the engine. One thing no path can make
+deterministic: `last` among readings with the *identical* instant (e.g. a skipped 02:10 shifted forward
+onto a real 03:10) — which of the tied values wins is unspecified. Parity tests run every
 period × aggregator × gap policy in several zones across real DST changes, including wall-clock data
 with the repeated autumn hour logged twice and a timeframe that ends inside it.
 

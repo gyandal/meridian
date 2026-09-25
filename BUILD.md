@@ -10,7 +10,7 @@
 
 ```bash
 dotnet build   -c Release        # build all libraries, hosts, samples and benchmarks
-dotnet test    -c Debug          # run all 587 tests across 8 projects
+dotnet test    -c Debug          # run all 900 tests across 8 projects
 ```
 
 ## The dashboard (start here)
@@ -70,6 +70,19 @@ Real data — NYC TLC yellow-taxi trips (public Parquet, ~65 MB per month):
 dotnet run -c Release --project bench/Meridian.Bench.Scale -- taxi-download --from 2025-07 --to 2026-06
 dotnet run -c Release --project bench/Meridian.Bench.Scale -- taxi-run --label my-machine
 ```
+
+Standard workload — [TSBS](https://github.com/timescale/tsbs) `cpu-only`. Needs Go to build TSBS's generator:
+
+```bash
+go install github.com/timescale/tsbs/cmd/tsbs_generate_data@latest      # → ~/go/bin
+dotnet run -c Release --project bench/Meridian.Bench.Scale -- tsbs-generate --scale 1000 --days 3
+dotnet run -c Release --project bench/Meridian.Bench.Scale -- tsbs-run --instances 20 --label my-machine
+```
+
+`tsbs-generate` streams TSBS's own output into DuckDB and writes it twice: TSBS's native wide schema
+(a column per metric) and the long layout Meridian reads. `tsbs-run` runs eight TSBS query types with
+random instances four ways — SQL on each layout, Meridian cold and warm — after checking Meridian's answer
+matches DuckDB's for each type.
 
 ## Micro-benchmarks (BenchmarkDotNet)
 

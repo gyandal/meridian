@@ -44,7 +44,9 @@ public static class Runner
             new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: EntityDim),
             transforms.Length == 0 ? [weeklyMean] : transforms);
 
-        DuckDbPointSource Source() => new(sourceOptions, EntityDim);
+        // One source (one database) for the whole run, as a live application holds; "cold" = empty Meridian cache.
+        var shared = new DuckDbPointSource(sourceOptions, EntityDim);
+        DuckDbPointSource Source() => shared;
         MeridianRuntime Cold(bool pushdown) =>
             MeridianRuntime.InMemory(catalog, pushdown ? Source() : new RawOnlySource(Source()));
 
@@ -125,7 +127,7 @@ public static class Runner
 
     private static async Task<int> BaselineSqlAsync(string relation, long[] ids, DateInterval timeframe)
     {
-        using var conn = Generator.Open();
+        using var conn = Generator.Connect();
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
             $"SELECT entity_id, date_trunc('week', ts) AS bucket, avg(value) FROM {relation} " +

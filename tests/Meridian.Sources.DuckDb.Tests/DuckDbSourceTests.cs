@@ -62,13 +62,15 @@ public sealed class DuckDbFixture : IDisposable
                 (1, 'legacy', TIMESTAMP '2025-07-01 12:00:00', 3),   -- summer: UTC+1
                 (1, 'legacy', TIMESTAMP '2025-10-26 01:30:00', 4);   -- happens twice in London
 
-            -- New York wall-clock readings every 10 minutes around both 2025 DST changes, as a system that
-            -- logs local time would store them: the skipped spring hour has rows, and the repeated autumn
-            -- hour is logged twice (the second pass offset by 5 minutes, so no two rows tie).
+            -- New York wall-clock readings around both 2025 DST changes, as a system that logs local time
+            -- would store them: the skipped spring hour has rows, and the repeated autumn hour is logged twice.
+            -- Spacing avoids exact ties after conversion ("last" among identical instants is unspecified):
+            -- March readings are 7 minutes apart, so a skipped time shifted forward an hour never lands on a
+            -- real one; the autumn second pass is offset by 5 minutes.
             CREATE TABLE legacy_ny AS
             WITH walls AS (
-                SELECT e.entity_id, TIMESTAMP '2025-03-01' + to_minutes(m.m * 10) AS ts, m.m
-                FROM range(1, 3) AS e(entity_id), range(0, 20 * 144) AS m(m)
+                SELECT e.entity_id, TIMESTAMP '2025-03-01' + to_minutes(m.m * 7) AS ts, m.m
+                FROM range(1, 3) AS e(entity_id), range(0, 20 * 1440 // 7) AS m(m)
                 UNION ALL
                 SELECT e.entity_id, TIMESTAMP '2025-10-20' + to_minutes(m.m * 10), m.m + 100000
                 FROM range(1, 3) AS e(entity_id), range(0, 26 * 144) AS m(m)
@@ -85,6 +87,19 @@ public sealed class DuckDbFixture : IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>The datapoints table as a Parquet file, for sources that query files in place.</summary>
+    public string ParquetPath { get; } = Path.Combine(Path.GetTempPath(), $"meridian-{Guid.NewGuid():N}.parquet");
+
+    public void ExportParquet()
+    {
+        if (File.Exists(ParquetPath)) return;
+        using var conn = new DuckDBConnection(ConnectionString);
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"COPY datapoints TO '{ParquetPath.Replace(Path.DirectorySeparatorChar, '/')}' (FORMAT parquet)";
+        cmd.ExecuteNonQuery();
+    }
+
     public long Scalar(string sql)
     {
         using var conn = new DuckDBConnection(ConnectionString);
@@ -96,7 +111,7 @@ public sealed class DuckDbFixture : IDisposable
 
     public void Dispose()
     {
-        try { File.Delete(FilePath); File.Delete(FilePath + ".wal"); } catch (IOException) { }
+        try { File.Delete(FilePath); File.Delete(FilePath + ".wal"); File.Delete(ParquetPath); } catch (IOException) { }
     }
 }
 
@@ -150,7 +165,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     {
         var data = new TheoryData<string, string, string, GapPolicy>();
         foreach (var zone in Zones)
-        foreach (var period in new[] { "day", "week", "month" })
+        foreach (var period in new[] { "15m", "hour", "day", "week", "month" })
         foreach (var agg in new[] { "mean", "sum", "min", "max", "count", "median", "last" })
         foreach (var gap in Enum.GetValues<GapPolicy>())
         {
@@ -267,7 +282,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         var data = new TheoryData<AmbiguousTime, string, string, string>();
         foreach (var ambiguous in new[] { AmbiguousTime.Earlier, AmbiguousTime.Later })
         foreach (var zone in new[] { "UTC", "America/New_York", "Europe/London" })
-        foreach (var period in new[] { "day", "week", "month" })
+        foreach (var period in new[] { "15m", "hour", "day", "week", "month" })
         foreach (var agg in new[] { "mean", "sum", "min", "max", "count", "median", "last" })
         {
             data.Add(ambiguous, zone, period, agg);
@@ -323,6 +338,22 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         // Rejecting a time is an error only the engine can raise, so SQL must not quietly bucket it.
         var source = Source("legacy_ny", StoredTime.InZone("America/New_York", new LocalTimeResolution(ambiguous, skipped)));
         Assert.False(source.CanRollup(LegacyNyDef, new SourceRollup(Period.Day, Aggregators.Mean, CalendarContext.Default)));
+    }
+
+    [Fact]
+    public async Task An_in_memory_source_over_parquet_serves_concurrent_reports_from_one_database()
+    {
+        lock (db) db.ExportParquet();
+        using var source = new DuckDbPointSource(new DuckDbSourceOptions("Data Source=:memory:",
+            Relation: $"read_parquet('{db.ParquetPath.Replace(Path.DirectorySeparatorChar, '/')}')"), Athlete);
+        var fileBacked = Source();
+
+        // Ten reports at once through one source: each gets its own connection to the shared database.
+        var specs = Enumerable.Range(0, 10).Select(i => Spec(LoadDef, i % 2 == 0 ? Period.Week : Period.Day, Aggregators.Mean, GapPolicy.LeaveMissing)).ToList();
+        var fromParquet = await Task.WhenAll(specs.Select(s => MeridianRuntime.InMemory(Catalog, source).Engine.RunAsync(s, ProjectionOptions.Default)));
+        var fromTable = await Task.WhenAll(specs.Select(s => MeridianRuntime.InMemory(Catalog, fileBacked).Engine.RunAsync(s, ProjectionOptions.Default)));
+
+        for (int i = 0; i < specs.Count; i++) AssertSameView(fromTable[i], fromParquet[i]);
     }
 
     [Fact]
@@ -392,6 +423,8 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
 
     private static IPeriod PeriodNamed(string name) => name switch
     {
+        "15m" => Period.Every(TimeSpan.FromMinutes(15)),
+        "hour" => Period.Hour,
         "day" => Period.Day,
         "week" => Period.Week,
         "month" => Period.Month,

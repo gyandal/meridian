@@ -88,7 +88,9 @@ public static class Taxi
         PipelineSpec Spec(IEnumerable<long> zoneIds, params ITransform[] transforms) => PipelineSpec.Create(
             Tenant, Trips, [.. zoneIds.Select(id => new EntityRef(Zone, id))], timeframe,
             new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Zone), transforms.Length == 0 ? [weekly] : transforms);
-        DuckDbPointSource Source() => new(sourceOptions, Zone);
+        // One source (one database) for the whole run, as a live application holds; "cold" = empty Meridian cache.
+        var shared = new DuckDbPointSource(sourceOptions, Zone);
+        DuckDbPointSource Source() => shared;
         MeridianRuntime Cold(bool pushdown) =>
             MeridianRuntime.InMemory(catalog, pushdown ? Source() : new Runner.RawOnlySource(Source()));
 
@@ -148,7 +150,7 @@ public static class Taxi
 
     private static async Task<int> BaselineAsync(string relation, long[] ids, DateInterval timeframe)
     {
-        using var conn = Generator.Open();
+        using var conn = Generator.Connect();
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
             $"SELECT entity_id, date_trunc('week', ts) AS week, count(*) FROM {relation} " +

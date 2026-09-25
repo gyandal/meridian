@@ -31,14 +31,28 @@ public sealed record DuckDbSourceOptions(
 /// An <see cref="IRollupPointSource"/> over DuckDB. Raw fetches stream rows for the requested entities;
 /// rollups push the calendar bucketing into SQL so only one row per (entity, bucket) leaves the database.
 ///
-/// Pushdown covers day, week (any start day) and month buckets with the built-in aggregators, in any
+/// Pushdown covers fixed sub-daily, day, week (any start day) and month buckets with the built-in aggregators, in any
 /// report zone, for UTC data, wall-clock data in a zone (<see cref="StoredTime.InZone"/>, unless its DST
 /// policy rejects times) and local data as given. Zone conversions are generated from NodaTime's rules
 /// (<see cref="ZoneSql"/>), so a pushed-down result always equals the in-engine one; seasons fall back
 /// to a raw fetch.
 /// </summary>
-public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId entityDimension) : IRollupPointSource
+public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId entityDimension) : IRollupPointSource, IDisposable
 {
+    // An in-memory database (e.g. one that queries Parquet files) is created once for the source's lifetime
+    // and each query gets a duplicated connection to it: creating a DuckDB database costs far more than a
+    // query over it, and ':memory:' would otherwise be a new, empty database every time. File databases are
+    // opened per query; DuckDB.NET shares the underlying instance within a process.
+    private readonly bool _inMemory = new DuckDBConnectionStringBuilder { ConnectionString = options.ConnectionString }
+        .DataSource.StartsWith(":memory:", StringComparison.Ordinal);
+    private readonly Lazy<DuckDBConnection> _root = new(() =>
+    {
+        var root = new DuckDBConnection(options.ConnectionString);
+        root.Open();
+        return root;
+    });
+    private readonly Lock _gate = new();
+
     private static readonly Dictionary<IAggregator, string> SqlAggregates = new()
     {
         [Aggregators.Mean] = "avg({v})",
@@ -95,8 +109,10 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
             : time.Zone is { } storedZone ? ZoneSql.WallToUtc(ts, storedZone, time.Resolution!, timeframe)
             : ts;
         string local = utc is null ? ts
-            // Same zone in and out: the round trip is the identity for bucketing, so skip it (see ZoneSql).
-            : time.Zone is { } z && z.Id == rollup.Calendar.Zone.Id && ZoneSql.RoundTripKeepsDays(z, timeframe) ? ts
+            // Same zone in and out, day-or-longer buckets: the round trip can't change the bucket, so skip it
+            // (see ZoneSql). Sub-daily buckets need it — a skipped time shifts forward into the next hour.
+            : time.Zone is { } z && z.Id == rollup.Calendar.Zone.Id && rollup.Period is not FixedPeriod
+                && ZoneSql.RoundTripKeepsDays(z, timeframe) ? ts
             : TimeZones.IsUtc(rollup.Calendar.Zone) ? utc
             : ZoneSql.UtcToWall(utc, rollup.Calendar.Zone, timeframe);
 
@@ -134,6 +150,11 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
     /// with no SQL equivalent (domain seasons).</summary>
     private static string? Truncate(SourceRollup rollup, string local)
     {
+        if (rollup.Period is FixedPeriod fixedPeriod)
+        {
+            // Spans divide a day, and DuckDB's default origin is a midnight, so buckets align with midnight.
+            return $"time_bucket(to_microseconds({fixedPeriod.Span.Ticks / 10}), {local})";
+        }
         if (ReferenceEquals(rollup.Period, Period.Day)) return $"date_trunc('day', {local})";
         if (ReferenceEquals(rollup.Period, Period.Month)) return $"date_trunc('month', {local})";
         if (ReferenceEquals(rollup.Period, Period.Week))
@@ -170,8 +191,7 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         var time = options.Time;
         var (start, end) = time.StoredRange(timeframe);
 
-        await using var conn = new DuckDBConnection(options.ConnectionString);
-        await conn.OpenAsync(ct).ConfigureAwait(false);
+        await using var conn = await ConnectAsync(ct).ConfigureAwait(false);
 
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
@@ -208,6 +228,28 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
             builder.Add(key, measure, new Instant(ticks));
         }
         return builder.Build();
+    }
+
+    private async Task<DuckDBConnection> ConnectAsync(CancellationToken ct)
+    {
+        DuckDBConnection conn;
+        if (_inMemory)
+        {
+            lock (_gate)
+            {
+                conn = _root.Value.Duplicate(); // a new connection to the same database, not yet open
+            }
+            await conn.OpenAsync(ct).ConfigureAwait(false);
+            return conn;
+        }
+        conn = new DuckDBConnection(options.ConnectionString);
+        await conn.OpenAsync(ct).ConfigureAwait(false);
+        return conn;
+    }
+
+    public void Dispose()
+    {
+        if (_root.IsValueCreated) _root.Value.Dispose();
     }
 
     private static long ReadTicks(object value, StoredTime time) => value switch

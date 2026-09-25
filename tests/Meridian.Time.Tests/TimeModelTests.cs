@@ -97,3 +97,41 @@ public class TimeModelTests
         Assert.Contains("IANA", error.Message);
     }
 }
+
+public class FixedPeriodTests
+{
+    private static readonly PointKey Key = PointKey.Of(KeyPart.Entity(new DimensionId("host"), 1));
+
+    [Fact]
+    public void Fixed_buckets_align_to_the_local_clock()
+    {
+        var at = Instant.FromUtc(new DateTime(2026, 7, 1, 10, 7, 30, DateTimeKind.Utc));
+        var block = PointBlock.FromRows([new Point(Key, 1, at)]);
+
+        var fiveMin = Resampler.Resample(block, Period.Every(TimeSpan.FromMinutes(5)), Aggregators.Max, GapPolicy.LeaveMissing, CalendarContext.Default);
+        var kolkata = Resampler.Resample(block, Period.Hour, Aggregators.Max, GapPolicy.LeaveMissing, CalendarContext.For("Asia/Kolkata")); // UTC+05:30
+
+        Assert.Equal(new DateTime(2026, 7, 1, 10, 5, 0).Ticks, fiveMin.AtTicks[0]);
+        Assert.Equal(TimeAxis.Local("5m", "UTC"), fiveMin.Time);
+        Assert.Equal(new DateTime(2026, 7, 1, 15, 0, 0).Ticks, kolkata.AtTicks[0]); // 15:37 local → the 15:00 bucket
+    }
+
+    [Fact]
+    public void The_repeated_autumn_hour_folds_into_one_local_bucket()
+    {
+        // 05:30 and 06:30 UTC on 2 Nov 2025 are both 01:30 in New York (EDT, then EST).
+        var rows = new[] { 5, 6 }.Select(h => new Point(Key, 1, Instant.FromUtc(new DateTime(2025, 11, 2, h, 30, 0, DateTimeKind.Utc))));
+        var hourly = Resampler.Resample(PointBlock.FromRows(rows), Period.Hour, Aggregators.Count, GapPolicy.LeaveMissing, CalendarContext.For("America/New_York"));
+
+        Assert.Equal(1, hourly.Count);
+        Assert.Equal(2, hourly.Values[0]);
+    }
+
+    [Theory]
+    [InlineData(7)]   // minutes: doesn't divide a day
+    [InlineData(0)]
+    public void Spans_must_divide_a_day(int minutes)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Period.Every(TimeSpan.FromMinutes(minutes)));
+    }
+}

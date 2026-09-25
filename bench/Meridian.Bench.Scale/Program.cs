@@ -9,6 +9,8 @@ using Meridian.Bench.Scale;
 //   dotnet run -c Release --project bench/Meridian.Bench.Scale -- all --entities 200 --days 365   # both, small
 //   dotnet run -c Release --project bench/Meridian.Bench.Scale -- taxi-download --from 2025-07 --to 2026-06
 //   dotnet run -c Release --project bench/Meridian.Bench.Scale -- taxi-run --label my-machine        # real NYC data
+//   dotnet run -c Release --project bench/Meridian.Bench.Scale -- tsbs-generate --scale 1000 --days 3 # needs Go + TSBS
+//   dotnet run -c Release --project bench/Meridian.Bench.Scale -- tsbs-run --label my-machine
 //
 // Rows = entities × metrics × days × per-day × (1 − gap%). Results land in bench/results/*.json, which the
 // dashboard (src/Meridian.Hosts.Http) charts under "Benchmarks".
@@ -23,11 +25,27 @@ if (args.Length == 0 || args[0] is "-h" or "--help")
                        --warm-iterations 50  --label local  --out bench/results
         taxi-download  --from 2025-07  --to 2026-06  --data data/nyc-taxi   (~65 MB per month, NYC TLC)
         taxi-run       --data data/nyc-taxi  --zones 10  --iterations 5  --warm-iterations 50  --label local
+        tsbs-generate  --scale 1000  --days 3  --seed 123  --data data/tsbs  --generator <tsbs_generate_data path>
+        tsbs-run       --data data/tsbs  --instances 20  --seed 7  --label local  --out bench/results
         """);
     return 0;
 }
 
 var opts = ParseOptions(args.Skip(1));
+
+if (args[0] is "tsbs-generate" or "tsbs-run")
+{
+    string tsbsDir = Str("data", "data/tsbs");
+    if (args[0] == "tsbs-generate")
+    {
+        Tsbs.Generate(tsbsDir, Str("generator", Tsbs.DefaultGenerator()), Int("scale", 1000), Int("days", 3), Int("seed", 123));
+    }
+    else
+    {
+        Taxi.Save(await Tsbs.RunAsync(tsbsDir, Int("instances", 20), Int("seed", 7), Str("label", "local")), Str("out", "bench/results"));
+    }
+    return 0;
+}
 
 if (args[0] is "taxi-download" or "taxi-run")
 {

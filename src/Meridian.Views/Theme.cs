@@ -64,6 +64,7 @@ public sealed class DefaultLabelResolver : ILabelResolver
         return time.Grain switch
         {
             "month" => local.ToString("yyyy-MM", CultureInfo.InvariantCulture),
+            "day" or "week" => local.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             "season" => calendar.Season.Label(new DateInterval(new Instant(ticks), new Instant(ticks)), calendar.Floating),
             _ => DateOrDateTime(local),
         };

@@ -78,6 +78,19 @@ public static class Generator
     public static string Relation(string dataDir) =>
         $"read_parquet('{ToSqlPath(Path.Combine(dataDir, "datapoints"))}/**/*.parquet', hive_partitioning = true)";
 
+    private static readonly Lazy<DuckDBConnection> Root = new(Open);
+    private static readonly Lock Gate = new();
+
+    /// <summary>A connection to one long-lived in-memory database — how an application would query — so SQL
+    /// baselines pay the same per-query costs as Meridian's DuckDB source, not a database start-up each.</summary>
+    public static DuckDBConnection Connect()
+    {
+        DuckDBConnection conn;
+        lock (Gate) conn = Root.Value.Duplicate();
+        conn.Open();
+        return conn;
+    }
+
     public static DuckDBConnection Open()
     {
         var conn = new DuckDBConnection("Data Source=:memory:");

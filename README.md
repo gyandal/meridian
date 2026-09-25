@@ -27,8 +27,8 @@ src/
   Meridian.Sources.MySql/  a real IPointSource over a MySQL datapoints table (MySqlConnector)
   Meridian.Sources.DuckDb/ IRollupPointSource over DuckDB tables or Parquet files, resample pushed into SQL
   Meridian.Semantics/   MetricDefinition / IMetricCatalog shape sketch
-tests/                  Core (15) + Time (24) + Transforms (12) + Caching (17) + Views (14) + Engine (5) + Hosts (11)
-                        + DuckDb source (489: pushdown-vs-engine parity across zones, DST and wall-clock data)
+tests/                  Core (15) + Time (28) + Transforms (12) + Caching (17) + Views (14) + Engine (5) + Hosts (11)
+                        + DuckDb source (798: pushdown-vs-engine parity across periods, zones, DST and wall-clock data)
 bench/
   Meridian.Benchmarks/  BenchmarkDotNet hot-path suite ([MemoryDiagnoser])
   Meridian.Bench.Scale/ generate millions–billions of rows as Parquet, time cold/warm/pushdown → bench/results/*.json
@@ -40,7 +40,7 @@ samples/
   dashboard-snapshot.html   a rendered ChartView gallery (static, shareable)
 ```
 
-`dotnet test` → 587 passing. Targets **net10.0**, nullable + warnings-as-errors.
+`dotnet test` → 900 passing. Targets **net10.0**, nullable + warnings-as-errors.
 Run the dashboard: `dotnet run --project src/Meridian.Hosts.Http` → http://localhost:5731.
 Time a source: `dotnet run -c Release --project samples/Meridian.Bench.Source` (add `-- --mysql "<conn>" <metric> 1,2,3` for a real DB).
 
@@ -138,55 +138,86 @@ Aggregation is already allocation-free. ACWR's 146 KB is the dictionary-grouping
 
 ## Scale benchmarks
 
-`bench/Meridian.Bench.Scale` generates a synthetic dataset as Parquet and times one report — weekly mean
-of one metric for 25 entities over a year — through every path. Measured on an i7-8700K (6 cores),
-32 GB, Windows 11, DuckDB 1.5.5, at two scales:
+Three workloads, all measured on an i7-8700K (6 cores), 32 GB, Windows 11, .NET 10, DuckDB 1.5.5. "Cold"
+means Meridian's cache is empty (the database and OS file cache are warm, as on a live server); "warm" is
+the same report again. Every run checks that Meridian's answer equals the database's before timing it.
+Full results, including p95, are in `bench/results/` and charted in the dashboard's **Benchmarks** section.
+
+### Synthetic: 172M and 1B rows
+
+`bench/Meridian.Bench.Scale` generates a longitudinal dataset as Parquet and times one report — weekly
+mean of one metric for 25 entities over a year — through every path.
 
 - **171.7M rows** — 5 metrics × 2,000 entities × 2 years × hourly · 577 MB Parquet · 215k raw rows in the report's scope
 - **1.03B rows** — 5 metrics × 6,000 entities × 2 years × half-hourly · 3.3 GB Parquet · 429k raw rows in scope
 
 | Scenario | 171.7M rows | 1.03B rows | What it shows |
 |---|---:|---:|---|
-| Hand-written SQL | 88 ms | 93 ms | the floor: one DuckDB `GROUP BY`, results read into memory |
-| Cold · raw fetch | 295 ms | 313 ms | empty cache, every raw row moved into Meridian and resampled there |
-| **Cold · pushdown** | **97 ms** | **94 ms** | empty cache, resample pushed into SQL — level with hand-written SQL |
-| Cold · pushdown, London weeks | 102 ms | — | as above, weeks drawn in Europe/London: the zone conversion runs inside DuckDB |
-| **Warm · cached** | **0.72 ms** | **0.59 ms** | repeat report, source untouched — 120–150× faster than querying the store |
-| Warm · +1 entity | 33 ms | 35 ms | only the new entity is fetched; the rest merge from cache |
-| Warm · 1 entity changed | 31 ms | 33 ms | a write invalidates one entity; only its slice is refetched |
-| Cold · 28-day rolling mean | 91 ms | 99 ms | daily means pushed down, rolling window per entity in the engine |
+| Hand-written SQL | 78 ms | 94 ms | the floor: one DuckDB `GROUP BY`, results read into memory |
+| Cold · raw fetch | 194 ms | 306 ms | every raw row moved into Meridian and resampled there |
+| **Cold · pushdown** | **72 ms** | **81 ms** | resample pushed into SQL — level with hand-written SQL |
+| Cold · pushdown, London weeks | 83 ms | 85 ms | weeks drawn in Europe/London, zone conversion inside the SQL |
+| **Warm · cached** | **0.65 ms** | **0.64 ms** | repeat report, source untouched — 120–150× faster than querying the store |
+| Warm · +1 entity | 14 ms | 20 ms | only the new entity is fetched; the rest merge from cache |
+| Warm · 1 entity changed | 12 ms | 20 ms | a write invalidates one entity; only its slice is refetched |
+| Cold · 28-day rolling mean | 82 ms | 82 ms | daily means pushed down, rolling window per entity in the engine |
 
-Six times the data costs almost nothing: latency tracks the rows *in scope*, not the size of the table
-— consistent with DuckDB skipping Parquet row groups outside the requested entities (the generator
-writes rows sorted by metric → entity → time). Pushdown makes Meridian's cold path cost about the same as writing the SQL yourself, and
-everything after the first run is served from cache. The incremental scenarios are dominated by the
-store's fixed per-query cost (opening Parquet metadata), not by row volume. "Cold" means Meridian's cache
-is empty; the OS file cache is warm, as on a live server. Full results, including p95, are in
-`bench/results/` and charted in the dashboard's **Benchmarks** section.
+Six times the data costs almost nothing: latency tracks the rows *in scope*, not the size of the table —
+consistent with DuckDB skipping Parquet row groups outside the requested entities (the generator writes
+rows sorted by metric → entity → time).
 
 ### Real data: NYC taxi trips
 
-The same harness over **47.5M real trips** — NYC TLC yellow-taxi records, Jul 2025 → Jun 2026, 775 MB of
-public Parquet read in place. Pickup times are New York wall-clock times with no zone, so the source is
-declared `StoredTime.InZone("America/New_York")` and weeks are New York weeks, across both DST changes.
-Report: weekly trips for the 10 busiest pickup zones (15.9M trips in scope).
+**47.5M real trips** — NYC TLC yellow-taxi records, Jul 2025 → Jun 2026, 775 MB of public Parquet read in
+place. Pickup times are New York wall-clock times with no zone, so the source is declared
+`StoredTime.InZone("America/New_York")` and weeks are New York weeks, across both DST changes. Report:
+weekly trips for the 10 busiest pickup zones (15.9M trips in scope).
 
 | Scenario | Median | |
 |---|---:|---|
-| Hand-written SQL | 747 ms | `date_trunc('week')` on the logged wall clock |
+| Hand-written SQL | 739 ms | `date_trunc('week')` on the logged wall clock |
 | Cold · raw fetch | 10.8 s | every trip into Meridian, converted from New York time, then bucketed |
-| **Cold · pushdown** | **796 ms** | DST-correct conversion and bucketing inside DuckDB — within ~7% of hand-written SQL |
-| **Warm · cached** | **0.55 ms** | |
-| Warm · +1 zone | 298 ms | the files aren't sorted by zone, so one zone still scans them all |
-| Cold · 28-day rolling mean | 911 ms | New York days pushed down, rolling window in the engine |
+| **Cold · pushdown** | **746 ms** | DST-correct conversion and bucketing inside DuckDB — within 1% of hand-written SQL |
+| **Warm · cached** | **0.34 ms** | |
+| Warm · +1 zone | 261 ms | the files aren't sorted by zone, so one zone still scans them all |
+| Cold · 28-day rolling mean | 724 ms | New York days pushed down, rolling window in the engine |
 
-Before timing, the harness checks that the pushed-down result equals the in-engine one on this data
-(it does, DST weeks included). The "+1 zone" row is a useful contrast with the synthetic data: there,
-entity-sorted Parquet made adding an entity ~33 ms; here the store's layout decides. Reproduce with
-`taxi-download` and `taxi-run` (see `BUILD.md`).
+The "+1 zone" row contrasts with the synthetic data: there, entity-sorted Parquet made adding an entity
+~14 ms; here the store's layout decides.
+
+### Standard workload: TSBS cpu-only
+
+[TSBS](https://github.com/timescale/tsbs) is the Time Series Benchmark Suite used to compare time-series
+databases. Data from TSBS's own generator — `cpu-only`, 1,000 hosts × 3 days at 10 s, **25.9M readings ×
+10 metrics = 259M values** — and eight TSBS query types, 20 random instances each (medians):
+
+| Query | SQL, TSBS wide schema | SQL, long layout | Meridian cold | Meridian warm |
+|---|---:|---:|---:|---:|
+| single-groupby-1-1-1 | 19 ms | 16 ms | 17 ms | 0.20 ms |
+| single-groupby-1-1-12 | 15 ms | 15 ms | 19 ms | 0.44 ms |
+| single-groupby-1-8-1 | 21 ms | 20 ms | 19 ms | 0.20 ms |
+| single-groupby-5-1-1 | 17 ms | 27 ms | 72 ms | 0.18 ms |
+| single-groupby-5-8-1 | 23 ms | 39 ms | 95 ms | 1.05 ms |
+| cpu-max-all-8 | 30 ms | 69 ms | 197 ms | 0.34 ms |
+| double-groupby-1 | 129 ms | 138 ms | 180 ms | 9.4 ms |
+| double-groupby-all | 265 ms | 1,270 ms | 1,866 ms | 121 ms |
+
+What it says, plainly:
+
+- **Single-metric queries: Meridian cold ≈ the database; warm is ~80× faster.** Pushdown makes the first
+  run cost what the SQL costs.
+- **Multi-metric queries are Meridian's weak spot.** A Meridian report covers one metric, so a 5- or
+  10-metric TSBS query becomes 5 or 10 source queries, where SQL asks once. Against TSBS's wide schema
+  (one scan reads every metric) that costs 4–7× cold. Fetching several metrics in one source call is
+  the fix, and it's on the roadmap.
+- **Large results make "warm" less free.** `double-groupby-all` returns 130,000 points; the cache spares
+  the database, but transforms and projection still run per request (121 ms). Caching finished views
+  for identical requests would close that.
+- The published TSBS results for other databases ran on other hardware, so compare shapes, not absolute
+  numbers. Reproduce with `tsbs-generate` and `tsbs-run` (see `BUILD.md`).
 
 **Pushdown** (`IRollupPointSource`): when a report starts with a resample the source can compute exactly
-(DuckDB: day / week from any start day / month buckets, in any IANA zone, for UTC, wall-clock-in-a-zone
+(DuckDB: sub-daily (`Period.Every`), day / week from any start day / month buckets, in any IANA zone, for UTC, wall-clock-in-a-zone
 or date columns, with mean, sum, min, max, count, median or last), the engine asks for one point per
 entity-bucket instead of every raw row. Zone conversions in the SQL are generated from NodaTime's rules,
 so they can't disagree with the engine. Anything else — seasons, custom aggregators — falls back to a raw
@@ -217,6 +248,8 @@ clock in a zone with a DST policy, or local dates). The full model is in [`docs/
 
 - The columnar/SIMD hot path — `PointBlock` exposes the SoA layout but `Resampler` still groups via
   dictionaries. This is where the benchmark-driven perf pass lands (Phase 1).
+- Multi-metric reports fetched in one source call (TSBS shows single-metric-per-report costs 4–7× on
+  5–10-metric queries), and caching finished views for identical requests with very large results.
 - Bucketing by the local day where each event happened (instant + stored offset), for entities that
   travel across zones — the time model leaves room for it (`docs/TIME.md`).
 - Quartiles/SD/percentage aggregators, and the full metric catalog (source binding, change→tag).
