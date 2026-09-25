@@ -6,6 +6,13 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 ## [Unreleased]
 
 ### Added
+- **Derived metrics**: `MetricDefinition.Ratio(...)` defines a metric as numerator ÷ denominator × scale
+  (goals per 90). Each input is aggregated through the report's aggregating steps (resample, rolling,
+  `GroupBy`, `Total`) with the formula's aggregation, then divided — a ratio of totals. A missing
+  numerator is 0; a missing or zero denominator gives no value. Inputs are fetched, cached, pushed down
+  and batched like any report; derived views are invalidated with their inputs. The catalog validates
+  formulas when it's built.
+- `IAggregatingTransform` (aggregator exposed and swappable) on resample, rolling, group-by, total and reduce.
 - **Dimensions**: reports can group by attributes beyond the entity (venue, competition…).
   `DuckDbSourceOptions.DimensionColumns` maps dimensions to columns; sources return every dimension a
   metric declares, and each report keeps the ones it names (`PipelineSpec.WithDimensions`), so charts

@@ -19,6 +19,18 @@ public interface ITransform
     PointBlock Apply(PointBlock input, TransformContext ctx);
 }
 
+/// <summary>
+/// A transform that combines values with an aggregator (resample, rolling, group-by, total, reduce). The
+/// engine swaps the aggregator when it runs a derived metric's inputs, so that each side of a ratio is
+/// totalled the way the formula says before dividing.
+/// </summary>
+public interface IAggregatingTransform : ITransform
+{
+    IAggregator Aggregator { get; }
+
+    ITransform WithAggregator(IAggregator aggregator);
+}
+
 /// <summary>An ordered composition of transforms. <c>Run</c> threads the block through each stage.</summary>
 public sealed class Pipeline
 {
