@@ -100,6 +100,12 @@ public class HttpHostTests(WebApplicationFactory<Program> factory) : IClassFixtu
         Assert.Contains("gaps", ids);       // gap policies
         Assert.Contains("venue", ids);      // category axis
 
+        // The multi-series panel: goals, minutes (right-hand axis) and derived goals per 90.
+        var per90 = panels.Single(p => p.GetProperty("id").GetString() == "per90").GetProperty("chartView");
+        Assert.Equal(["Goals", "Minutes", "Goals per 90"], per90.GetProperty("series").EnumerateArray().Select(x => x.GetProperty("name").GetString()));
+        Assert.Equal(2, per90.GetProperty("series")[1].GetProperty("axis").GetInt32());
+        Assert.Equal(3, per90.GetProperty("axes").GetArrayLength());
+
         // Every panel carries a real ChartView.
         Assert.All(panels, p => Assert.True(p.GetProperty("chartView").GetProperty("series").GetArrayLength() >= 1));
     }

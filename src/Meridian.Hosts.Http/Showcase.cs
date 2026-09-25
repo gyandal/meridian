@@ -1,4 +1,7 @@
+using Meridian.Caching;
 using Meridian.Core;
+using Meridian.Engine;
+using Meridian.Semantics;
 using Meridian.Time;
 using Meridian.Transforms;
 using Meridian.Views;
@@ -208,6 +211,24 @@ public static class Showcase
             new ViewSpec(ChartKind.Area, AxisSource.Time, SeriesBy: Seed.Player, ValueAxisTitle: "bpm"), Opts);
         return new("hr", "Resting HR (a second metric)", "Second metric · own unit",
             "A different metric with its own unit (bpm) flows through the identical pipeline — nothing is metric-specific.", view);
+    }
+
+    /// <summary>
+    /// A multi-series chart through the engine: goals (columns), minutes (a line on the right-hand axis) and
+    /// goals per 90 — a derived metric, total goals ÷ total minutes × 90 per month — for one player.
+    /// </summary>
+    public static async Task<ShowcasePanel> GoalsMinutesPer90Async(ReportEngine engine, DateTime today)
+    {
+        PipelineSpec Monthly(MetricId metric, ChartKind kind) => PipelineSpec.Create(
+            Seed.Tenant, metric, [new EntityRef(Seed.Player, 3)], Back(today, 365),
+            new ViewSpec(kind, AxisSource.Time), Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing));
+
+        var view = await engine.RunChartAsync(ChartSpec.Of(
+            new SeriesSpec(Monthly(Seed.Goals, ChartKind.Column)),
+            new SeriesSpec(Monthly(Seed.Minutes, ChartKind.Line), Axis: ValueAxis.Secondary),
+            new SeriesSpec(Monthly(Seed.GoalsPer90, ChartKind.Line))), Opts);
+        return new("per90", "Goals, minutes and goals per 90 (player 3)", "Multi-series · derived metric · second axis",
+            "Three reports on one chart, fetched together. Goals per 90 divides each month's total goals by its total minutes — never an average of per-match ratios.", view);
     }
 
     private static DateInterval Back(DateTime today, int days) =>

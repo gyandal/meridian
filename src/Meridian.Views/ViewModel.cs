@@ -55,7 +55,11 @@ public sealed record MarkView(
     double? Y = null,
     double? Z = null);
 
-public sealed record SeriesView(string Name, string ColorToken, IReadOnlyList<MarkView> Marks);
+/// <summary>A series. In a multi-series chart built from several reports, <see cref="Kind"/> says how this
+/// series is drawn (columns for goals, a line for goals per 90) and <see cref="Axis"/> which value axis it
+/// uses (an index into <see cref="ChartView.Axes"/>: 1 = primary, 2 = secondary); both are omitted when the
+/// chart's own kind and primary axis apply.</summary>
+public sealed record SeriesView(string Name, string ColorToken, IReadOnlyList<MarkView> Marks, ChartKind? Kind = null, int? Axis = null);
 
 /// <summary>An axis. A temporal axis also says what its times are (docs/TIME.md): <see cref="TimeKind.Instant"/>
 /// values are UTC epoch-millis to display in <see cref="TimeZone"/>; <see cref="TimeKind.Local"/> values are
