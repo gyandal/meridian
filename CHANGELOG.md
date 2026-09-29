@@ -5,6 +5,8 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
 ## [Unreleased]
 
+## [0.1.0-preview.6] — 2026-09-29
+
 ### Added
 - **SQL Server source** (`Meridian.Sources.SqlServer`): `SqlServerPointSource` for SQL Server 2016+ and Azure SQL,
   with long and wide layouts, dimensions and batching. Mean, sum, min, max, count, standard deviation and variance
@@ -202,7 +204,8 @@ First public preview: core point model, time and transforms, caching with per-en
 invalidation, chart-agnostic views and JSON contract, report engine, REST host with dashboard, agent tool
 surface, MySQL source.
 
-[Unreleased]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.5...HEAD
+[Unreleased]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.6...HEAD
+[0.1.0-preview.6]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.5...v0.1.0-preview.6
 [0.1.0-preview.5]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.4...v0.1.0-preview.5
 [0.1.0-preview.4]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.3...v0.1.0-preview.4
 [0.1.0-preview.3]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.2...v0.1.0-preview.3
