@@ -1,51 +1,50 @@
-using System.Globalization;
 using System.Text;
 using Meridian.Core;
 using Meridian.Time;
 using DateTimeZone = NodaTime.DateTimeZone;
 using NodaInstant = NodaTime.Instant;
 
-namespace Meridian.Sources.DuckDb;
+namespace Meridian.Sources.Sql;
 
 /// <summary>
 /// Time-zone conversion as plain SQL arithmetic, generated from NodaTime's zone rules. Over a report's
 /// timeframe a zone has only a handful of offset changes, so each conversion is a short <c>CASE</c> over
 /// literal cut-offs. This keeps pushdown exactly in step with the engine — same tz database, same DST
 /// resolution policy — instead of relying on the database's own time-zone data and its own choice of
-/// which occurrence an ambiguous wall-clock time means.
+/// which occurrence an ambiguous wall-clock time means. The arithmetic and literals come from the dialect.
 /// </summary>
 internal static class ZoneSql
 {
     private static readonly long UnixEpochTicks = DateTime.UnixEpoch.Ticks;
     private static readonly long Margin = 2 * TimeSpan.TicksPerDay; // wall clocks are within ±14 h of UTC
 
-    /// <summary>SQL turning a UTC <c>TIMESTAMP</c> expression into wall-clock time in <paramref name="zone"/>.</summary>
-    public static string UtcToWall(string utc, DateTimeZone zone, DateInterval range)
+    /// <summary>SQL turning a UTC timestamp expression into wall-clock time in <paramref name="zone"/>.</summary>
+    public static string UtcToWall(SqlDialect sql, string utc, DateTimeZone zone, DateInterval range)
     {
         var intervals = Intervals(zone, range);
-        if (intervals.Count == 1) return Shift(utc, intervals[0].Offset);
+        if (intervals.Count == 1) return Shift(sql, utc, intervals[0].Offset);
 
         var sb = new StringBuilder("(CASE");
         for (int i = 0; i < intervals.Count - 1; i++)
         {
-            sb.Append($" WHEN {utc} < {Literal(intervals[i].EndUtc)} THEN {Shift(utc, intervals[i].Offset)}");
+            sb.Append($" WHEN {utc} < {sql.TimestampLiteral(new DateTime(intervals[i].EndUtc))} THEN {Shift(sql, utc, intervals[i].Offset)}");
         }
-        return sb.Append($" ELSE {Shift(utc, intervals[^1].Offset)} END)").ToString();
+        return sb.Append($" ELSE {Shift(sql, utc, intervals[^1].Offset)} END)").ToString();
     }
 
     /// <summary>
-    /// SQL turning a wall-clock <c>TIMESTAMP</c> expression in <paramref name="zone"/> into UTC, resolving
-    /// DST exactly as <see cref="TimeZones.ToUtcTicks"/> does: at each change the wall clock either jumps
-    /// forward (a gap; skipped times shift forward, i.e. keep the old offset) or repeats (an overlap;
-    /// <see cref="AmbiguousTime.Earlier"/> keeps the old offset, <see cref="AmbiguousTime.Later"/> takes the new).
-    /// Returns null for policies that reject times, which SQL cannot express.
+    /// SQL turning a wall-clock timestamp expression in <paramref name="zone"/> into UTC, resolving DST exactly
+    /// as <see cref="TimeZones.ToUtcTicks"/> does: at each change the wall clock either jumps forward (a gap;
+    /// skipped times shift forward, i.e. keep the old offset) or repeats (an overlap; <see cref="AmbiguousTime.Earlier"/>
+    /// keeps the old offset, <see cref="AmbiguousTime.Later"/> takes the new). Returns null for policies that reject
+    /// times, which SQL cannot express.
     /// </summary>
-    public static string? WallToUtc(string wall, DateTimeZone zone, LocalTimeResolution resolution, DateInterval range)
+    public static string? WallToUtc(SqlDialect sql, string wall, DateTimeZone zone, LocalTimeResolution resolution, DateInterval range)
     {
         if (resolution.Ambiguous == AmbiguousTime.Reject || resolution.Skipped == SkippedTime.Reject) return null;
 
         var intervals = Intervals(zone, range);
-        if (intervals.Count == 1) return Shift(wall, -intervals[0].Offset);
+        if (intervals.Count == 1) return Shift(sql, wall, -intervals[0].Offset);
 
         var sb = new StringBuilder("(CASE");
         for (int i = 0; i < intervals.Count - 1; i++)
@@ -55,9 +54,9 @@ internal static class ZoneSql
             long cutoff = after > before || resolution.Ambiguous == AmbiguousTime.Later
                 ? change + after      // gap: skipped times keep the old offset; overlap+Later: repeats take the new one
                 : change + before;    // overlap+Earlier: the repeated hour keeps the old offset
-            sb.Append($" WHEN {wall} < {Literal(cutoff)} THEN {Shift(wall, -before)}");
+            sb.Append($" WHEN {wall} < {sql.TimestampLiteral(new DateTime(cutoff))} THEN {Shift(sql, wall, -before)}");
         }
-        return sb.Append($" ELSE {Shift(wall, -intervals[^1].Offset)} END)").ToString();
+        return sb.Append($" ELSE {Shift(sql, wall, -intervals[^1].Offset)} END)").ToString();
     }
 
     /// <summary>
@@ -81,8 +80,8 @@ internal static class ZoneSql
 
     /// <summary>
     /// The wall-clock range whose rows are exactly the rows whose converted instants fall in
-    /// <paramref name="timeframe"/> — so the filter can run on the stored column (and prune Parquet row
-    /// groups) instead of converting every row. Null when a boundary is within a few hours of a DST change,
+    /// <paramref name="timeframe"/> — so the filter can run on the stored column (and prune row groups or use
+    /// an index) instead of converting every row. Null when a boundary is within a few hours of a DST change,
     /// where the mapping isn't monotonic and only the converted comparison is exact.
     /// </summary>
     public static (DateTime Start, DateTime End)? WallRange(DateTimeZone zone, DateInterval timeframe)
@@ -106,10 +105,6 @@ internal static class ZoneSql
 
     private static NodaInstant ToNoda(long utcTicks) => NodaInstant.FromUnixTimeTicks(utcTicks - UnixEpochTicks);
 
-    private static string Shift(string expr, long offsetTicks) => offsetTicks == 0
-        ? expr
-        : $"({expr} + to_microseconds({(offsetTicks / 10).ToString(CultureInfo.InvariantCulture)}))";
-
-    private static string Literal(long ticks) =>
-        $"TIMESTAMP '{new DateTime(ticks).ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}'"; // DuckDB: µs precision
+    private static string Shift(SqlDialect sql, string expression, long offsetTicks) =>
+        offsetTicks == 0 ? expression : sql.AddMicroseconds(expression, offsetTicks / 10);
 }

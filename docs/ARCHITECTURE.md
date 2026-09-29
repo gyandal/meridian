@@ -28,6 +28,7 @@ entities, timeframe, transforms, view.
 | `Meridian.Views` | `ChartView` (series → marks, typed axes, legend, annotations), `ViewSpec`, themes, label resolvers, status rules, `ChartProjector` |
 | `Meridian.Views.Json` | the source-generated JSON wire contract for `ChartView` |
 | `Meridian.Engine` | `PipelineSpec`, `ReportEngine` (`RunAsync`, `RunManyAsync`), `IPointSource` / `IRollupPointSource` / `IBatchPointSource`, `ViewCache`, `MeridianRuntime` wiring |
+| `Meridian.Sources.Sql` | the SQL engine every database source shares: layouts, dimensions, batching, exact time handling and pushdown, through a `SqlDialect` |
 | `Meridian.Sources.DuckDb` | DuckDB tables or Parquet in place — long (row per value) or wide (column per metric) — with pushdown and batching |
 | `Meridian.Sources.MySql` | a MySQL datapoints table |
 | `Meridian.Hosts.Mcp` | agent tools: `describe` the catalog, `query` a bounded typed report |
@@ -307,6 +308,13 @@ capabilities make large stores fast:
 
 Sources declare how their timestamps are stored (`StoredTime`: UTC, wall clock in a zone, or local dates)
 and normalise once, at fetch.
+
+Database sources share one engine, `SqlPointSource` (`Meridian.Sources.Sql`): long and wide layouts,
+dimension columns, one query for many metrics, the exact timeframe filter for wall-clock data, and
+pushdown whose zone conversions are generated from NodaTime's rules. What differs between databases is a
+`SqlDialect` — connections, parameters, casts, timestamp arithmetic, calendar truncation, aggregate SQL. A
+dialect returns null for anything its database can't compute exactly, and that rollup falls back to a raw
+fetch, so a new database gets correctness from the shared engine and speed where its SQL allows.
 
 ## Testing
 

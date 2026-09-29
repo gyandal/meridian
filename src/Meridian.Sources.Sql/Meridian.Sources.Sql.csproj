@@ -3,7 +3,7 @@
     <IsPackable>true</IsPackable>
     <TargetFramework></TargetFramework>
     <TargetFrameworks>$(SupportedTargetFrameworks)</TargetFrameworks>
-    <Description>Meridian IPointSource over DuckDB — query DuckDB tables or Parquet files directly, with time-bucket aggregation pushed down into SQL.</Description>
+    <Description>The shared SQL engine behind Meridian's database sources: long and wide layouts, dimensions, batched multi-metric queries, exact time handling and calendar-bucket pushdown, over any ADO.NET provider through a small SQL dialect.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />
@@ -11,9 +11,5 @@
     <ProjectReference Include="../Meridian.Caching/Meridian.Caching.csproj" />
     <ProjectReference Include="../Meridian.Semantics/Meridian.Semantics.csproj" />
     <ProjectReference Include="../Meridian.Engine/Meridian.Engine.csproj" />
-    <ProjectReference Include="../Meridian.Sources.Sql/Meridian.Sources.Sql.csproj" />
-  </ItemGroup>
-  <ItemGroup>
-    <PackageReference Include="DuckDB.NET.Data.Full" Version="1.5.5" />
   </ItemGroup>
 </Project>

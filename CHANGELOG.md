@@ -10,6 +10,10 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
   suite runs on all three. Each app gets the build for its runtime, so .NET 10 apps keep the net10.0 build
   (and its faster runtime — see docs/BENCHMARKS.md). The only newer API in use, `System.Threading.Lock`,
   falls back to `Monitor` on .NET 8.
+- **`Meridian.Sources.Sql`**: the database-source engine, extracted from the DuckDB source — `SqlPointSource`
+  plus a `SqlDialect` for what differs between databases — so new databases share its layouts, batching,
+  exact time handling and pushdown. `DuckDbPointSource` is now a `SqlPointSource` with `DuckDbDialect`;
+  its API and results are unchanged (the DuckDB parity suite passes as before).
 
 ## [0.1.0-preview.4] — 2026-09-29
 
