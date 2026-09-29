@@ -195,3 +195,49 @@ public class ShareTests
         Assert.All([1, 2, 3], i => Assert.Equal(MeasureFlags.Missing, shares.Flags[i] & MeasureFlags.Missing));
     }
 }
+
+public class CumulativeTests
+{
+    private static readonly DimensionId Player = new("player");
+
+    private static PointBlock Weeks(long player, params double?[] values) => PointBlock.FromRows([.. values.Select((v, i) =>
+        new Point(PointKey.Of(KeyPart.Entity(Player, player)), v is { } x ? Measurement.Of(x) : Measurement.Missing,
+            Instant.FromUtc(new DateTime(2026, 7, 6).AddDays(7 * (values.Length - 1 - i))), Unit.None))]); // newest first
+
+    private static double?[] Run(IAggregator aggregator, PointBlock block)
+    {
+        var output = Transform.Cumulative(aggregator).Apply(block, TransformContext.Default);
+        return [.. Enumerable.Range(0, output.Count).Select(i => (output.Flags[i] & MeasureFlags.Missing) != 0 ? (double?)null : output.Values[i])];
+    }
+
+    [Fact]
+    public void A_running_total_is_in_time_order_and_carries_over_a_missing_value()
+    {
+        // Rows arrive newest first; the output runs oldest first: 2, 2+1, (missing: still 3), 3+4.
+        Assert.Equal([2.0, 3.0, 3.0, 7.0], Run(Aggregators.Sum, Weeks(1, 4, null, 1, 2)));
+        Assert.Equal([null, 5.0], Run(Aggregators.Sum, Weeks(1, 5, null)));
+    }
+
+    [Fact]
+    public void Other_aggregators_run_too()
+    {
+        var block = Weeks(1, 1, 9, 3, 5); // oldest first: 5, 3, 9, 1
+        Assert.Equal([5.0, 5.0, 9.0, 9.0], Run(Aggregators.Max, block));
+        Assert.Equal([5.0, 3.0, 3.0, 1.0], Run(Aggregators.Min, block));
+        Assert.Equal([5.0, 4.0, 17 / 3.0, 4.5], Run(Aggregators.Mean, block));
+        Assert.Equal([1.0, 2.0, 3.0, 4.0], Run(Aggregators.Count, block));
+        Assert.True(Aggregators.TryResolve("median", out var median));
+        Assert.Equal([5.0, 4.0, 5.0, 4.0], Run(median, block));
+    }
+
+    [Fact]
+    public void Each_key_runs_separately()
+    {
+        var block = PointBlock.FromRows([.. Enumerable.Range(0, 2).SelectMany(i => new[]
+        {
+            new Point(PointKey.Of(KeyPart.Entity(Player, 1)), 1, Instant.FromUtc(new DateTime(2026, 7, 6).AddDays(i))),
+            new Point(PointKey.Of(KeyPart.Entity(Player, 2)), 10, Instant.FromUtc(new DateTime(2026, 7, 6).AddDays(i))),
+        })]);
+        Assert.Equal([1.0, 2.0, 10.0, 20.0], Run(Aggregators.Sum, block));
+    }
+}

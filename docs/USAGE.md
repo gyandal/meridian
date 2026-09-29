@@ -52,45 +52,49 @@ public sealed class GoalsSource : IPointSource
 }
 ```
 
-### 3. Ask the two seasons and compare
+### 3. Ask for this season, and compare it with last
 
-The season calendar gives you the boundaries; `Reduce` sums each athlete's goals; `Compare` (or a
-side-by-side view) does the year-on-year.
-
-```csharp
-var runtime = MeridianRuntime.InMemory(catalog, new GoalsSource());
-var cal = CalendarContext.Default;                       // Jul–Jun season, here
-var tctx = new TransformContext(cal);
-
-var thisSeason = cal.Season.SeasonFor(Instant.FromUtc(DateTime.UtcNow), cal);
-var lastSeason = cal.Season.SeasonFor(new Instant(thisSeason.Start.UtcTicks - 1), cal);
-
-// total goals per athlete in a season = drop the date axis, sum
-PointBlock GoalsPerPlayer(DateInterval season) =>
-    Transform.Reduce(p => p.Key, Aggregators.Sum)
-             .Apply(FetchRaw(goals, [1, 2, 3, 4], season), tctx);
-
-var current  = GoalsPerPlayer(thisSeason);
-var previous = GoalsPerPlayer(lastSeason);
-
-// % change season-over-season, per athlete
-var change = Binary.Compare(previous, current, CompareMode.PercentChange);
-```
-
-Or, to render the two seasons as grouped columns (what the dashboard's showcase does), tag each with
-a season label and project:
+A report is a spec. A comparison is the same spec with a baseline: `Earlier(baseline)` gives the earlier
+period's values drawn on this period's axis, and `ChangeFrom(baseline)` gives the change.
 
 ```csharp
-var seasonDim = new DimensionId("season");
-var merged = Merge(
-    Tag(previous, seasonDim, cal.Season.Label(lastSeason, cal)),   // "2025/26"
-    Tag(current,  seasonDim, cal.Season.Label(thisSeason, cal)));  // "2026/27"
+var runtime  = MeridianRuntime.InMemory(catalog, new GoalsSource());
+var calendar = CalendarContext.Default;                 // Jul–Jun season, here
+var season   = calendar.Season.SeasonFor(Instant.FromUtc(DateTime.UtcNow), calendar);
+var squad    = new[] { 1L, 2L, 3L, 4L }.Select(id => new EntityRef(player, id)).ToList();
 
-ChartView view = ChartProjector.Instance.Project(merged,
-    new ViewSpec(ChartKind.Column, AxisSource.Category(player), SeriesBy: seasonDim,
-                 ValueAxisTitle: "goals"),
-    ProjectionOptions.Default);
+// Total goals per player this season.
+var goalsPerPlayer = PipelineSpec.Create("club", goals, squad, season,
+    new ViewSpec(ChartKind.Column, AxisSource.Category(player)),
+    Transform.Total(Aggregators.Sum, player));
+
+// This season and last, side by side: two series on one chart, fetched together.
+ChartView sideBySide = await runtime.Engine.RunChartAsync(ChartSpec.Of(
+    new SeriesSpec(goalsPerPlayer, "This season"),
+    new SeriesSpec(goalsPerPlayer.Earlier(Baseline.SeasonsBack(1)), "Last season")), ProjectionOptions.Default);
+
+// Or the change per player, in %.
+ChartView change = await runtime.Engine.RunAsync(
+    goalsPerPlayer.ChangeFrom(Baseline.SeasonsBack(1)), ProjectionOptions.Default);
 ```
+
+For "so far this season against the same point last season", run the season to date with a running
+total. The baseline covers the same stretch of last season, so the lines end at the same point:
+
+```csharp
+var soFar = PipelineSpec.Create("club", goals, squad, new DateInterval(season.Start, Instant.FromUtc(DateTime.UtcNow)),
+    new ViewSpec(ChartKind.Line, AxisSource.Time),
+    Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill),
+    Transform.GroupBy(Aggregators.Sum),              // the squad as one line
+    Transform.Cumulative(Aggregators.Sum));          // goals so far
+
+await runtime.Engine.RunChartAsync(ChartSpec.Of(
+    new SeriesSpec(soFar, "This season"),
+    new SeriesSpec(soFar.Earlier(Baseline.SeasonsBack(1)), "Last season")), ProjectionOptions.Default);
+```
+
+Everything above caches, pushes the monthly bucketing down to a SQL source, and can be stored in a
+dashboard definition (`"compare": { "unit": "season" }` on a series, and a `cumulative` transform).
 
 ### 4. The result (chart-agnostic JSON)
 
@@ -98,18 +102,18 @@ ChartView view = ChartProjector.Instance.Project(merged,
 {
   "kind": "Column",
   "series": [
-    { "name": "2025/26", "colorToken": "#4E79A7",
-      "marks": [ { "label": "1", "value": 39 }, { "label": "2", "value": 55 }, … ] },
-    { "name": "2026/27", "colorToken": "#F28E2B",
-      "marks": [ { "label": "1", "value": 7 },  { "label": "2", "value": 12 }, … ] }
+    { "name": "This season", "colorToken": "#4E79A7",
+      "marks": [ { "label": "1", "value": 7 },  { "label": "2", "value": 12 }, … ] },
+    { "name": "Last season", "colorToken": "#F28E2B",
+      "marks": [ { "label": "1", "value": 39 }, { "label": "2", "value": 55 }, … ] }
   ],
   "axes": [ { "kind": "Category", "title": "player" },
-            { "kind": "Linear", "title": "goals", "unit": "" } ]
+            { "kind": "Linear", "unit": "" } ]
 }
 ```
 
-Any front-end draws it. Swap `ChartKind.Column` for `Line`, or `Compare(...)` for the grouped view —
-same data, no new code upstream.
+Any front-end draws it. Swap `ChartKind.Column` for `Line`, or `Earlier` for `ChangeFrom` — same data,
+no new code upstream.
 
 ---
 

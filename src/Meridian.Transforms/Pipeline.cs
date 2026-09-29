@@ -33,6 +33,13 @@ public interface IKeyFilter : IDimensionalTransform;
 /// <summary>A filter on a point's value. It depends on what has been aggregated so far, so it's never moved.</summary>
 public interface IValueFilter : ITransform;
 
+/// <summary>A transform that can take time off points (a total over the whole timeframe), leaving nothing
+/// to line up by time.</summary>
+public interface ITimeCollapsing : ITransform
+{
+    bool CollapsesTime { get; }
+}
+
 /// <summary>A transform that divides each value by a total of values (a share), so it needs values that add up.</summary>
 public interface IShareTransform : IDimensionalTransform;
 

@@ -25,6 +25,14 @@ public static class Transform
     public static ITransform Resample(IPeriod period, IAggregator aggregator, GapPolicy gap) =>
         new ResampleTransform(period, aggregator, gap);
 
+    /// <summary>
+    /// A running total over time, per key: each point becomes the aggregate of its key's values up to and
+    /// including it — goals so far this season. With another aggregator it's a running max, mean and so on.
+    /// For a derived metric the running totals are taken of its inputs, so a running goals per 90 is goals so
+    /// far ÷ minutes so far. Points without a time are dropped, as with <see cref="Rolling"/>.
+    /// </summary>
+    public static ITransform Cumulative(IAggregator aggregator) => new CumulativeTransform(aggregator);
+
     /// <summary>Rolling window over time, per key. Window is (t - <paramref name="window"/>, t].</summary>
     public static ITransform Rolling(TimeSpan window, IAggregator aggregator) =>
         new RollingTransform(window, aggregator);
@@ -82,8 +90,10 @@ public static class Transform
 /// colours) doesn't depend on the order rows arrived in — cache, pushdown or raw fetch. A group with no
 /// present values is missing.
 /// </summary>
-internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by, bool keepTime) : IAggregatingTransform, IDimensionalTransform, ICacheIdentity
+internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by, bool keepTime) : IAggregatingTransform, IDimensionalTransform, ITimeCollapsing, ICacheIdentity
 {
+    public bool CollapsesTime => !keepTime;
+
     public IReadOnlyCollection<DimensionId> Dimensions => by;
 
     public IAggregator Aggregator => aggregator;
@@ -333,6 +343,62 @@ public sealed class ResampleTransform(IPeriod period, IAggregator aggregator, Ga
 
     public PointBlock Apply(PointBlock input, TransformContext ctx) =>
         Resampler.Resample(input, Period, Aggregator, Gap, ctx.Calendar);
+}
+
+internal sealed class CumulativeTransform(IAggregator aggregator) : IAggregatingTransform, ICacheIdentity
+{
+    public IAggregator Aggregator => aggregator;
+
+    public ITransform WithAggregator(IAggregator other) => new CumulativeTransform(other);
+
+    public string CacheIdentity => $"cumulative({aggregator.Name})";
+
+    public PointBlock Apply(PointBlock input, TransformContext ctx)
+    {
+        var byKey = new Dictionary<PointKey, List<int>>();
+        var order = new List<PointKey>();
+        for (int i = 0; i < input.Count; i++)
+        {
+            if (input.AtTicks[i] == PointBlock.NoAt) continue;
+            if (!byKey.TryGetValue(input.Keys[i], out var list))
+            {
+                byKey[input.Keys[i]] = list = [];
+                order.Add(input.Keys[i]);
+            }
+            list.Add(i);
+        }
+
+        var output = PointBlock.Builder.Like(input);
+        var seen = new List<double>();
+        foreach (var key in order)
+        {
+            var indices = byKey[key];
+            indices.Sort((a, b) => input.AtTicks[a] != input.AtTicks[b] ? input.AtTicks[a].CompareTo(input.AtTicks[b]) : a.CompareTo(b));
+            seen.Clear();
+            double running = 0;
+            foreach (int i in indices)
+            {
+                if ((input.Flags[i] & MeasureFlags.Missing) == 0)
+                {
+                    double v = input.Values[i];
+                    seen.Add(v);
+                    // The common aggregators run in constant time per point; any other re-aggregates the prefix.
+                    running = aggregator.Name switch
+                    {
+                        "sum" => running + v,
+                        "count" => seen.Count,
+                        "min" => seen.Count == 1 ? v : Math.Min(running, v),
+                        "max" => seen.Count == 1 ? v : Math.Max(running, v),
+                        "mean" => running + (v - running) / seen.Count,
+                        "last" => v,
+                        _ => aggregator.Aggregate(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(seen)),
+                    };
+                }
+                output.Add(key, seen.Count == 0 ? Measurement.Missing : Measurement.Of(running), new Instant(input.AtTicks[i]));
+            }
+        }
+        return output.Build();
+    }
 }
 
 internal sealed class RollingTransform(TimeSpan window, IAggregator aggregator) : IAggregatingTransform, ICacheIdentity

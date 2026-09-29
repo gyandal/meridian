@@ -41,6 +41,10 @@ var chart = await meridian.Engine.RunAsync(
   divides *totals* for each bucket and group (never averages per-match ratios), treats no goals as zero,
   and fetches both inputs in one query. Sums and differences (goal involvements = goals + assists) and
   shares of a total (each player's % of the squad's goals) work the same way.
+- **Compare with last season, correctly.** Any report can be drawn against an earlier period (last
+  season on this season's axis) or turned into the change since then. Comparisons line up bucket for
+  bucket — a weekly one steps back 52 weeks, so Mondays meet Mondays — and "so far this season" meets
+  the same point last season.
 - **Dashboards as data.** A dashboard is JSON a product can store and let users edit; charts share one
   context (players, timeframe), load together, and focusing on one player is served from cache.
 - **One definition, every surface.** The same metric catalog drives charts, a REST API and a typed agent
