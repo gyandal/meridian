@@ -103,6 +103,14 @@ public sealed class DuckDbFixture : IDisposable
             UNION ALL
             SELECT entity_id, 'goals', ts, goals, venue FROM m WHERE goals > 0;
 
+            -- A level: open issues per site, family and priority, snapshotted daily (a few snapshots missing).
+            CREATE TABLE levels AS
+            SELECT s.site AS entity_id, 'open-issues' AS metric, TIMESTAMP '2025-01-01' + to_days(d.d) AS ts,
+                   CASE WHEN hash(s.site * 101 + d.d * 7 + f.f * 3 + p.p) % 13 = 0 THEN NULL
+                        ELSE CAST(5 * f.f + 2 * p.p + (hash(s.site + d.d * 31 + f.f * 5 + p.p) % 9) AS DOUBLE) END AS value,
+                   'family' || f.f AS family, 'p' || p.p AS priority
+            FROM range(1, 3) AS s(site), range(0, 120) AS d(d), range(1, 3) AS f(f), range(1, 4) AS p(p);
+
             CREATE TABLE typed (entity_id INTEGER, metric VARCHAR, ts TIMESTAMP, value DECIMAL(10, 2));
             INSERT INTO typed VALUES (1, 'typed', TIMESTAMP '2025-02-01 10:00', 12.50), (1, 'typed', TIMESTAMP '2025-02-02 10:00', 7.25);
 
@@ -1331,6 +1339,67 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         public IAggregator Aggregator => aggregator;
         public ITransform WithAggregator(IAggregator other) => new PassThrough(other);
         public PointBlock Apply(PointBlock input, TransformContext ctx) => input;
+    }
+
+    // ---------------------------------------------------------------------------------- semi-additive levels
+
+    private static readonly DimensionId FamilyDim = new("family");
+    private static readonly DimensionId PriorityDim = new("priority");
+    private static readonly MetricDefinition OpenIssuesDef = new(new MetricId("open-issues"), "Open issues", Unit.None, "last",
+        [Athlete, FamilyDim, PriorityDim], TimeGrain.Daily) { Additivity = Additivity.SemiAdditive };
+    private static readonly InMemoryMetricCatalog LevelsCatalog = new([OpenIssuesDef]);
+
+    private DuckDbPointSource LevelsSource() => new(new DuckDbSourceOptions(db.ConnectionString, Relation: "levels",
+        DimensionColumns: new Dictionary<string, string> { ["family"] = "family", ["priority"] = "priority" }), Athlete);
+
+    private static PipelineSpec LevelReport(IAggregator aggregator, params DimensionId[] keep) => PipelineSpec.Create(
+        "ops", OpenIssuesDef.Id, [new EntityRef(Athlete, 1)],
+        new DateInterval(Instant.FromUtc(new DateTime(2025, 1, 1)), Instant.FromUtc(new DateTime(2025, 5, 1))),
+        new ViewSpec(ChartKind.Column, AxisSource.Time, SeriesBy: FamilyDim),
+        Transform.Resample(Period.Month, aggregator, GapPolicy.LeaveMissing)).WithDimensions(keep);
+
+    [Theory]
+    [InlineData("last")]
+    [InlineData("mean")]
+    [InlineData("max")]
+    [InlineData("sum")]
+    public async Task A_level_that_drops_a_dimension_is_the_same_with_or_without_pushdown(string aggregator)
+    {
+        Assert.True(Aggregators.TryResolve(aggregator, out var agg));
+        var report = LevelReport(agg, FamilyDim); // priority is dropped
+
+        var counting = new CountingSource(LevelsSource());
+        var viaSource = await MeridianRuntime.InMemory(LevelsCatalog, counting).Engine.RunAsync(report, ProjectionOptions.Default);
+        var inEngine = await MeridianRuntime.InMemory(LevelsCatalog, new RawOnly(LevelsSource())).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        // Only a sum groups the same in SQL as summing the parts first; anything else is computed in the engine.
+        Assert.Equal(aggregator == "sum" ? 1 : 0, counting.Rollups);
+        Assert.Equal(aggregator == "sum" ? 0 : 1, counting.Raws);
+        AssertSameView(inEngine, viaSource);
+    }
+
+    [Fact]
+    public async Task A_level_at_month_end_is_the_total_across_the_dropped_dimension_and_keeping_it_still_pushes_down()
+    {
+        var view = await MeridianRuntime.InMemory(LevelsCatalog, LevelsSource()).Engine.RunAsync(LevelReport(Aggregators.Last, FamilyDim), ProjectionOptions.Default);
+
+        // Each day's total over the priorities with a value; the month's last day that has one.
+        var expected = db.Rows("""
+            WITH daily AS (
+                SELECT family, ts, sum(value) AS total FROM levels
+                WHERE entity_id = 1 AND ts < TIMESTAMP '2025-05-01' GROUP BY family, ts HAVING count(value) > 0)
+            SELECT family, strftime(date_trunc('month', ts), '%Y-%m'), arg_max(total, ts) FROM daily GROUP BY 1, 2 ORDER BY 1, 2
+            """, r => (Family: r.GetString(0), Month: r.GetString(1), Value: r.GetDouble(2)));
+        Assert.Equal(8, expected.Count);
+        foreach (var (family, month, value) in expected)
+        {
+            Assert.Equal(value, view.Series.Single(s => s.Name.EndsWith(family, StringComparison.Ordinal)).Marks.Single(m => m.Label == month).Value);
+        }
+
+        // Keeping every dimension, nothing is folded, so a last pushes down as before.
+        var counting = new CountingSource(LevelsSource());
+        await MeridianRuntime.InMemory(LevelsCatalog, counting).Engine.RunAsync(LevelReport(Aggregators.Last, FamilyDim, PriorityDim), ProjectionOptions.Default);
+        Assert.Equal(1, counting.Rollups);
     }
 
     private static PipelineSpec Monthly(MetricDefinition metric, ChartKind kind, params long[] athletes) => PipelineSpec.Create(

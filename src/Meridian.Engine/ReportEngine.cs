@@ -292,8 +292,15 @@ public sealed class ReportEngine(
         var signature = "source"; // raw slices carry every dimension the source knows, so all reports share them
         SourceRollup? pushed = null;
 
+        // A level folded across a dropped dimension must be summed per time before it's bucketed (see KeepOnly);
+        // SQL grouping by the kept dimensions would apply Last (or Max, Mean…) to the parts instead. Only Sum
+        // gives the same answer either way, so any other aggregator runs in the engine.
+        bool dropsDimension = metric.ValidDimensions.Any(d => !keep.Contains(d));
+        bool levelNeedsEngine = metric.Additivity == Additivity.SemiAdditive && dropsDimension;
+
         // Pushdown: a leading resample the source can compute is done where the data lives.
-        if (transforms.Length > 0 && transforms[0] is ResampleTransform resample && source is IRollupPointSource rollupSource)
+        if (transforms.Length > 0 && transforms[0] is ResampleTransform resample && source is IRollupPointSource rollupSource
+            && !(levelNeedsEngine && !ReferenceEquals(resample.Aggregator, Aggregators.Sum)))
         {
             var rollup = new SourceRollup(resample.Period, resample.Aggregator, options.Calendar, dimensions);
             if (rollupSource.CanRollup(metric, rollup))
@@ -381,7 +388,7 @@ public sealed class ReportEngine(
         }
 
         var context = new TransformContext(options.Calendar);
-        var blocks = request.Inputs.Select(p => Apply(p.Transforms, KeepOnly(raws[p.LoadKey], p.Keep), context)).ToList();
+        var blocks = request.Inputs.Select(p => Apply(p.Transforms, KeepOnly(raws[p.LoadKey], p.Keep, p.Metric.Additivity), context)).ToList();
         var combined = request.Formula switch
         {
             RatioFormula ratio => Ratio(blocks[0], blocks[1], ratio.Scale, request.Metric.Unit),
@@ -502,8 +509,13 @@ public sealed class ReportEngine(
         return output.Build();
     }
 
-    /// <summary>Fold away dimensions the report didn't declare (sources return all they know).</summary>
-    private static PointBlock KeepOnly(PointBlock block, HashSet<DimensionId> keep)
+    /// <summary>
+    /// Fold away dimensions the report didn't declare (sources return all they know). For an additive metric
+    /// the folded rows can stay separate — every later aggregation pools them. A semi-additive metric's rows
+    /// that end up with the same key and time are one level measured in parts (open issues at each priority),
+    /// so they're summed here, before a resample's Last could pick one part; if all parts are missing, so is the sum.
+    /// </summary>
+    private static PointBlock KeepOnly(PointBlock block, HashSet<DimensionId> keep, Additivity additivity)
     {
         var keys = block.Keys;
         int i = 0;
@@ -511,10 +523,32 @@ public sealed class ReportEngine(
         if (i == keys.Length) return block; // nothing to fold: the common case costs one scan, no copy
 
         var builder = PointBlock.Builder.Like(block);
+        if (additivity == Additivity.Additive)
+        {
+            for (int j = 0; j < block.Count; j++)
+            {
+                var row = block.Row(j);
+                builder.Add(row.Key.Only(keep), row.Measure, row.At);
+            }
+            return builder.Build();
+        }
+
+        var order = new List<(PointKey Key, long At)>();
+        var sums = new Dictionary<(PointKey Key, long At), (double Sum, bool Present, bool Estimated)>();
         for (int j = 0; j < block.Count; j++)
         {
-            var row = block.Row(j);
-            builder.Add(row.Key.Only(keep), row.Measure, row.At);
+            var slot = (keys[j].Only(keep), block.AtTicks[j]);
+            if (!sums.TryGetValue(slot, out var total)) order.Add(slot);
+            if ((block.Flags[j] & MeasureFlags.Missing) == 0)
+            {
+                total = (total.Sum + block.Values[j], true, total.Estimated || (block.Flags[j] & MeasureFlags.Estimated) != 0);
+            }
+            sums[slot] = total;
+        }
+        foreach (var slot in order)
+        {
+            var (sum, present, estimated) = sums[slot];
+            builder.Add(slot.Key, present ? Measurement.Of(sum, estimated) : Measurement.Missing, slot.At == PointBlock.NoAt ? null : new Instant(slot.At));
         }
         return builder.Build();
     }
