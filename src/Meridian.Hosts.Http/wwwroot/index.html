@@ -187,7 +187,8 @@ function renderChart(svg, view){
       const col=k.colorToken||s.colorToken;
       const r=el("rect",{x:x+1,y:Y(k.value),width:Math.max(1,bw-2),height:m.t+ih-Y(k.value),rx:2,fill:col,
         "fill-opacity":k.estimated?.3:null,stroke:k.estimated?col:null,"stroke-dasharray":k.estimated?"3 2":null});
-      r.appendChild(tip(k));svg.appendChild(r);});
+      r.appendChild(tip(k));svg.appendChild(r);
+      if(k.low!=null){const cx=x+bw/2;svg.appendChild(el("path",{d:`M ${cx} ${Y(k.low)} V ${Y(k.high)} M ${cx-3} ${Y(k.low)} H ${cx+3} M ${cx-3} ${Y(k.high)} H ${cx+3}`,stroke:col,"stroke-width":1.2,fill:"none"}));}});
   });
   view.series.filter(s=>kindOf(s)!=="Column").forEach(s=>{ const {Y,ymin}=scales[axisOf(s)];
     const pts=s.marks.filter(k=>k.value!=null).map(k=>[X(k),Y(k.value),k]);
@@ -195,6 +196,11 @@ function renderChart(svg, view){
     const path=ps=>ps.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
     const d=path(pts);
     if(kindOf(s)==="Area"){svg.appendChild(el("path",{d:d+` L ${pts[pts.length-1][0]} ${Y(ymin)} L ${pts[0][0]} ${Y(ymin)} Z`,fill:s.colorToken,opacity:.13}));}
+    // A projected range as a band, from the last observed point (where there's no uncertainty) outwards.
+    const ranged=pts.filter(p=>p[2].low!=null);
+    if(ranged.length){const lastSeen=pts.filter(p=>!p[2].estimated).pop(), edge=lastSeen?[[lastSeen[0],lastSeen[1],lastSeen[1]]]:[];
+      const band=[...edge,...ranged.map(p=>[p[0],Y(p[2].high),Y(p[2].low)])];
+      svg.appendChild(el("path",{d:"M "+band.map(b=>b[0].toFixed(1)+" "+b[1].toFixed(1)).join(" L ")+" L "+band.slice().reverse().map(b=>b[0].toFixed(1)+" "+b[2].toFixed(1)).join(" L ")+" Z",fill:s.colorToken,opacity:.15}));}
     // Observed as a solid line; projected (estimated) points continue it as a faint dotted one.
     const seen=pts.filter(p=>!p[2].estimated), cut=seen.length?pts.indexOf(seen[seen.length-1]):0;
     if(seen.length)svg.appendChild(el("path",{d:path(seen),fill:"none",stroke:s.colorToken,"stroke-width":2,"stroke-linejoin":"round","stroke-dasharray":axisOf(s)===2?"5 3":null}));
@@ -204,7 +210,7 @@ function renderChart(svg, view){
       c.appendChild(tip(k));svg.appendChild(c);});
   });
   svg.appendChild(el("line",{x1:m.l,y1:m.t+ih,x2:W-m.r,y2:m.t+ih,stroke:"var(--line)"}));
-  function tip(k){const t=document.createElementNS(NS,"title");t.textContent=`${k.label}: ${f1(k.value)}${k.estimated?"  (projected)":""}${k.status&&k.status!=="Neutral"?"  ("+k.status+")":""}`;return t;}
+  function tip(k){const t=document.createElementNS(NS,"title");t.textContent=`${k.label}: ${f1(k.value)}${k.estimated?"  (projected"+(k.low!=null?`, ${f1(k.low)}–${f1(k.high)}`:"")+")":""}${k.status&&k.status!=="Neutral"?"  ("+k.status+")":""}`;return t;}
 }
 function legendHtml(view){return view.series.map(s=>`<span><i style="background:${s.colorToken}"></i>${s.name}${s.axis===2?" (right axis)":""}</span>`).join("");}
 

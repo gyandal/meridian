@@ -118,7 +118,8 @@ public sealed record CompareDefinition(string Unit, int Back = 1, string? Show =
 /// <c>cumulative</c> (<c>aggregator</c> — a running total, e.g. goals so far),
 /// <c>top</c> / <c>bottom</c> (<c>n</c>, <c>aggregator</c> to rank by, optional <c>by</c> to rank within — e.g. the top 5 scorers),
 /// <c>forecast</c> (<c>model</c>: mean, trend, seasonal-naive or holt-winters, with <c>season</c> — its length in
-/// buckets — where it has one; <c>n</c> buckets ahead, or <c>until</c>: "season-end").
+/// buckets — where it has one; <c>n</c> buckets ahead, or <c>until</c>: "season-end"; optional <c>range</c>, a
+/// percentage such as 80, and <c>runningTotal</c> for "on pace for" with its range).
 /// Periods: <c>day</c>, <c>week</c>, <c>month</c>, <c>season</c>, <c>hour</c>, or a span such as <c>15m</c> / <c>6h</c>.
 /// Gaps: <c>leave-missing</c> (default), <c>zero-fill</c>, <c>carry-forward</c>, <c>interpolate</c>.
 /// </summary>
@@ -137,7 +138,9 @@ public sealed record TransformDefinition(
     int? N = null,
     string? Model = null,
     int? Season = null,
-    string? Until = null)
+    string? Until = null,
+    double? Range = null,
+    bool? RunningTotal = null)
 {
     internal ITransform ToTransform(string path) => Kind?.ToLowerInvariant() switch
     {
@@ -148,7 +151,9 @@ public sealed record TransformDefinition(
         "total" => Transform.Total(ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))]),
         "where" => Where(path),
         "cumulative" => Transform.Cumulative(ParseAggregator(path)),
-        "forecast" => Transform.Forecast(ParseModel(path), ParseHorizon(path)),
+        "forecast" => Range is null or (> 0 and < 100)
+            ? Transform.Forecast(ParseModel(path), ParseHorizon(path), Range, RunningTotal ?? false)
+            : throw new DashboardDefinitionException(path + ".range", "a range is a percentage between 0 and 100, e.g. 80."),
         "top" or "bottom" => N is > 0
             ? (Kind.Equals("top", StringComparison.OrdinalIgnoreCase) ? Transform.Top : (Func<int, IAggregator, DimensionId[], ITransform>)Transform.Bottom)(
                 N.Value, ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))])

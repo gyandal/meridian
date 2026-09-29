@@ -47,7 +47,8 @@ var chart = await meridian.Engine.RunAsync(
   the same point last season.
 - **Projections that say they're projections.** Forecast any bucketed series — the pace so far, a trend,
   last season's shape — to a number of buckets or the end of the season. "On pace for 14 goals" is a
-  forecast then a running total; every value built on a projection is marked, so charts can draw it
+  forecast then a running total, with its range — "14, between 11 and 17" — computed for the total, not
+  summed from monthly ranges; every value built on a projection is marked, so charts can draw it
   differently.
 - **Dashboards as data.** A dashboard is JSON a product can store and let users edit; charts share one
   context (players, timeframe), load together, and focusing on one player is served from cache.
@@ -165,7 +166,7 @@ committed benchmark run, with history.
 
 In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: PostgreSQL / SQL Server /
 ClickHouse sources, qualifying thresholds for rates, round-aligned comparisons, a Redis cache backend and
-an MCP server. Later: forecast ranges and scenario modelling. See [ROADMAP.md](ROADMAP.md).
+an MCP server. Later: scenario modelling. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

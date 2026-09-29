@@ -205,6 +205,8 @@ public class HttpHostTests(WebApplicationFactory<Program> factory) : IClassFixtu
         Assert.Equal(9, squad.RootElement.GetProperty("charts").GetArrayLength());
         var pace = squad.RootElement.GetProperty("charts")[2].GetProperty("chartView").GetProperty("series")[0].GetProperty("marks").EnumerateArray().ToList();
         Assert.Contains(pace, m => m.TryGetProperty("estimated", out var e) && e.GetBoolean());   // projected months are marked…
+        Assert.All(pace.Where(m => m.TryGetProperty("estimated", out _)), m =>
+            Assert.True(m.GetProperty("low").GetDouble() < m.GetProperty("value").GetDouble() && m.GetProperty("value").GetDouble() < m.GetProperty("high").GetDouble()));
         Assert.Contains(pace, m => !m.TryGetProperty("estimated", out _));                        // …observed ones carry no flag
         Assert.Equal(3, squad.RootElement.GetProperty("charts")[6].GetProperty("chartView").GetProperty("series")[0].GetProperty("marks").GetArrayLength());
         var share = squad.RootElement.GetProperty("charts")[7].GetProperty("chartView");

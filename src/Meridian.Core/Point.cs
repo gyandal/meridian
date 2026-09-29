@@ -21,4 +21,10 @@ public readonly record struct Point(PointKey Key, Measurement Measure, Instant? 
     }
 
     public bool IsLongitudinal => At.HasValue;
+
+    /// <summary>For a forecast point, the range it's expected to fall in at the forecast's level (e.g. 80%).</summary>
+    public ValueRange? Range { get; init; }
 }
+
+/// <summary>The range a projected value is expected to fall in: <see cref="Low"/> to <see cref="High"/>.</summary>
+public readonly record struct ValueRange(double Low, double High);

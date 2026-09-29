@@ -206,6 +206,9 @@ into one bucket.
 | `SeasonalNaive(m)` | the same bucket a season (m buckets) ago | 1 season |
 | `HoltWinters()` / `HoltWinters(m)` | smoothed level and trend (Holt), plus a seasonal pattern (additive Holt-Winters) | 4 buckets / 2 seasons |
 
+A range needs a little more history than a projection: two buckets for `Mean`, and a season-on-season change
+for `SeasonalNaive`; with less, points are projected without one.
+
 Holt-Winters picks its smoothing weights from a fixed grid by one-step-ahead error, so a forecast is a pure
 function of the data (and caches like any view). A key with too little history gets no forecast rather
 than a confident one. Future buckets are shared across keys — they follow the last bucket any key has — and
@@ -219,12 +222,39 @@ values. So "on pace for" — `Forecast(Mean, SeasonEnd)` then `Cumulative(Sum)` 
 marked projected after, and for goals per 90 the forecast runs on goals and minutes and the rate divides the
 projected totals.
 
-Two things to know:
+**Zero-fill events before forecasting.** A month with no goal rows is 0 goals, but without zero-fill it's a
+gap, and gaps are bridged on a straight line for fitting — a pace that ignores the blank months.
 
-- **Zero-fill events before forecasting.** A month with no goal rows is 0 goals, but without zero-fill it's
-  a gap, and gaps are bridged on a straight line for fitting — a pace that ignores the blank months.
-- **These are point forecasts.** There are no prediction intervals yet (they're on the roadmap); a chart
-  should say "projected", not "will".
+### Forecast ranges
+
+`Forecast(model, horizon, range: 80)` gives each projected point the range it's expected to fall in
+(`Point.Range`, `MarkView.Low` / `High`); views stretch the value axis to fit it. Each model states its
+forecast errors as weights on independent errors of a common spread (`ForecastModel.Errors`), which makes the
+range of any *sum* of future values exact too, not just of each one:
+
+| Model | Range from |
+|---|---|
+| `Mean` | the spread of the history, plus the error in the estimated pace; Student's t on n − 1 |
+| `Trend` | the residual spread, plus the fitted line's error at that point; Student's t on n − 2 |
+| `SeasonalNaive(m)` | the spread of season-on-season changes; wider by one change per season ahead |
+| `HoltWinters` | the one-step errors, carried forward by the smoothing weights (the ETS innovations form) |
+
+The mean and trend ranges are the textbook prediction intervals, and a simulation in the tests checks that an
+80% range holds the true value 78–82% of the time, for next month and for a six-month total. Holt-Winters
+treats its fitted weights as known, so its ranges are approximate: simulating a drifting trend, an 80% range
+held the next value about 75% of the time with 12 buckets of history (80% with 40), and six steps ahead about
+85%.
+
+**Ranges don't survive steps that combine values.** The lower bound of a sum isn't the sum of the lower
+bounds — errors partly cancel, and some (the error in the estimated pace) don't cancel at all. So a group
+total, running total, rolling window, share, formula or comparison refuses ranged points with an error,
+rather than drawing a band that means nothing. Steps that keep rows — filters, top/bottom, an earlier
+period drawn on this one's axis — keep ranges. To get a range:
+
+- **Combine first, then forecast.** Total the squad by month, then forecast the total.
+- **For "on pace for", forecast the running total:** `Forecast(Mean, SeasonEnd, range: 80, runningTotal: true)`
+  returns the observed running total, then projected totals with the range of the whole sum.
+- **For a rate, forecast the rate** (after its last aggregation), not goals and minutes separately.
 
 ## Multi-series charts
 

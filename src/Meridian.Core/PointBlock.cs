@@ -14,12 +14,15 @@ public sealed class PointBlock
     private readonly double[] _values;
     private readonly MeasureFlags[] _flags;
     private readonly long[] _at;
+    private readonly double[]? _low;
+    private readonly double[]? _high;
 
     public Unit Unit { get; }
     public TimeAxis Time { get; }
     public int Count { get; }
 
-    internal PointBlock(Unit unit, TimeAxis time, PointKey[] keys, double[] values, MeasureFlags[] flags, long[] at, int count)
+    internal PointBlock(Unit unit, TimeAxis time, PointKey[] keys, double[] values, MeasureFlags[] flags, long[] at, int count,
+        double[]? low = null, double[]? high = null)
     {
         Unit = unit;
         Time = time;
@@ -28,7 +31,15 @@ public sealed class PointBlock
         _flags = flags;
         _at = at;
         Count = count;
+        _low = low;
+        _high = high;
     }
+
+    /// <summary>Whether any point has a <see cref="ValueRange"/> — a forecast made with a range.</summary>
+    public bool HasRanges => _low is not null;
+
+    /// <summary>The range of point <paramref name="i"/>, or null if it has none.</summary>
+    public ValueRange? RangeAt(int i) => _low is not null && !double.IsNaN(_low[i]) ? new ValueRange(_low[i], _high![i]) : null;
 
     public ReadOnlySpan<PointKey> Keys => _keys.AsSpan(0, Count);
     public ReadOnlySpan<double> Values => _values.AsSpan(0, Count);
@@ -41,7 +52,7 @@ public sealed class PointBlock
         _keys[i],
         new Measurement(_values[i], _flags[i]),
         _at[i] == NoAt ? null : new Instant(_at[i]),
-        Unit);
+        Unit) { Range = RangeAt(i) };
 
     public IEnumerable<Point> Rows()
     {
@@ -68,19 +79,31 @@ public sealed class PointBlock
         private readonly List<double> _values = [];
         private readonly List<MeasureFlags> _flags = [];
         private readonly List<long> _at = [];
+        private List<double>? _low;
+        private List<double>? _high;
 
-        public Builder Add(Point p) => Add(p.Key, p.Measure, p.At);
+        /// <summary>Adds a row, keeping its <see cref="Point.Range"/>.</summary>
+        public Builder Add(Point p) => Add(p.Key, p.Measure, p.At, p.Range);
 
-        public Builder Add(PointKey key, Measurement measure, Instant? at)
+        public Builder Add(PointKey key, Measurement measure, Instant? at, ValueRange? range = null)
         {
+            if (range is { } r && _low is null)
+            {
+                // The first ranged row: earlier rows have none.
+                _low = [.. Enumerable.Repeat(double.NaN, _keys.Count)];
+                _high = [.. Enumerable.Repeat(double.NaN, _keys.Count)];
+            }
             _keys.Add(key);
             _values.Add(measure.Value);
             _flags.Add(measure.Flags);
             _at.Add(at?.UtcTicks ?? NoAt);
+            _low?.Add(range?.Low ?? double.NaN);
+            _high?.Add(range?.High ?? double.NaN);
             return this;
         }
 
         public PointBlock Build() =>
-            new(unit, time, [.. _keys], [.. _values], [.. _flags], [.. _at], _keys.Count);
+            new(unit, time, [.. _keys], [.. _values], [.. _flags], [.. _at], _keys.Count,
+                _low is null ? null : [.. _low], _high is null ? null : [.. _high]);
     }
 }

@@ -413,6 +413,8 @@ public sealed class ReportEngine(
             if ((numerator.Flags[i] & MeasureFlags.Missing) == 0) totals[(numerator.Keys[i], numerator.AtTicks[i])] = numerator.Row(i).Measure;
         }
 
+        ForecastRanges.EnsureNone(numerator, "a ratio");
+        ForecastRanges.EnsureNone(denominator, "a ratio");
         var output = new PointBlock.Builder(unit, denominator.Count > 0 ? denominator.Time : numerator.Time);
         for (int i = 0; i < denominator.Count; i++)
         {
@@ -433,7 +435,7 @@ public sealed class ReportEngine(
         for (int i = 0; i < baseline.Count; i++)
         {
             long at = shift.Forward(baseline.AtTicks[i], baseline.Time, calendar);
-            output.Add(baseline.Keys[i], baseline.Row(i).Measure, at == PointBlock.NoAt ? null : new Instant(at));
+            output.Add(baseline.Keys[i], baseline.Row(i).Measure, at == PointBlock.NoAt ? null : new Instant(at), baseline.RangeAt(i));
         }
         return output.Build();
     }
@@ -447,6 +449,8 @@ public sealed class ReportEngine(
             if ((baseline.Flags[i] & MeasureFlags.Missing) == 0) before[(baseline.Keys[i], baseline.AtTicks[i])] = baseline.Row(i).Measure;
         }
 
+        ForecastRanges.EnsureNone(current, "a comparison");
+        ForecastRanges.EnsureNone(baseline, "a comparison");
         var result = new PointBlock.Builder(output == ComparisonOutput.PercentChange ? new Unit("%") : current.Unit, current.Time);
         for (int i = 0; i < current.Count; i++)
         {
@@ -488,6 +492,7 @@ public sealed class ReportEngine(
             }
         }
 
+        foreach (var input in inputs) ForecastRanges.EnsureNone(input, "a sum of metrics");
         var output = new PointBlock.Builder(unit, present.Count > 0 ? present[0].Time : inputs[0].Time);
         foreach (var ((key, at), (sum, seen, estimated)) in totals.OrderBy(e => e.Key.Key).ThenBy(e => e.Key.At))
         {
