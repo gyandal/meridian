@@ -241,3 +241,72 @@ public class CumulativeTests
         Assert.Equal([1.0, 2.0, 10.0, 20.0], Run(Aggregators.Sum, block));
     }
 }
+
+public class RankTests
+{
+    private static readonly DimensionId Player = new("player");
+    private static readonly DimensionId Venue = new("venue");
+
+    private static Point P(long player, double value, int month = 1, string venue = "Home") =>
+        new(PointKey.Of(KeyPart.Entity(Player, player), KeyPart.Category(Venue, venue)), value, Instant.FromUtc(new DateTime(2026, month, 1)));
+
+    private static long[] Players(PointBlock block) =>
+        [.. Enumerable.Range(0, block.Count).Select(i => block.Keys[i].TryGet(Player, out var p) ? p.Numeric : -1).Distinct()];
+
+    [Fact]
+    public void Top_keeps_the_highest_scoring_keys_with_ties_to_the_lower_key()
+    {
+        var block = PointBlock.FromRows([P(1, 5), P(2, 9), P(3, 7), P(4, 9), P(5, 1)]);
+        Assert.Equal([2L, 4L], Players(Transform.Top(2, Aggregators.Sum).Apply(block, TransformContext.Default)));
+        Assert.Equal([1L, 5L], Players(Transform.Bottom(2, Aggregators.Sum).Apply(block, TransformContext.Default)));
+        Assert.Equal(5, Transform.Top(10, Aggregators.Sum).Apply(block, TransformContext.Default).Count);
+        Assert.Equal([2L], Players(Transform.Top(1, Aggregators.Sum).Apply(block, TransformContext.Default))); // 2 and 4 tie on 9
+    }
+
+    [Fact]
+    public void Order_sensitive_scores_read_each_keys_values_in_time_order_and_unscorable_keys_are_left_out()
+    {
+        // Rows arrive newest first. Player 1's latest month is 1 (after a 9); player 2's is 5 (after a 0).
+        var block = PointBlock.FromRows([P(1, 1, 2), P(2, 5, 2), P(1, 9, 1), P(2, 0, 1), P(3, 4, 1)]);
+        Assert.Equal([2L], Players(Transform.Top(1, Aggregators.Last).Apply(block, TransformContext.Default)));
+
+        // Player 3 has one month, so no spread to rank: it's in neither the top nor the bottom.
+        Assert.Equal([1L], Players(Transform.Top(1, Aggregators.StdDev).Apply(block, TransformContext.Default)));
+        Assert.Equal([1L, 2L], Players(Transform.Bottom(5, Aggregators.StdDev).Apply(block, TransformContext.Default)).Order());
+    }
+
+    [Fact]
+    public void Over_time_it_picks_series_by_their_score_and_keeps_all_their_points()
+    {
+        // Player 1 scores 3 + 3, player 2 has one big month (5) then nothing, player 3 is steady (2, 2).
+        var block = PointBlock.FromRows([P(1, 3, 1), P(1, 3, 2), P(2, 5, 1), P(2, 0, 2), P(3, 2, 1), P(3, 2, 2)]);
+
+        var bySum = Transform.Top(1, Aggregators.Sum).Apply(block, TransformContext.Default);
+        Assert.Equal([1L], Players(bySum));
+        Assert.Equal(2, bySum.Count);
+        Assert.Equal([2L], Players(Transform.Top(1, Aggregators.Max).Apply(block, TransformContext.Default)));   // best single month
+        Assert.Equal([1L], Players(Transform.Top(1, Aggregators.Last).Apply(block, TransformContext.Default)));  // best latest month
+    }
+
+    [Fact]
+    public void Per_ranks_within_each_group_and_keys_without_values_are_not_ranked()
+    {
+        var block = PointBlock.FromRows(
+        [
+            P(1, 5, venue: "Home"), P(2, 3, venue: "Home"), P(3, 1, venue: "Away"), P(4, 2, venue: "Away"),
+            new Point(PointKey.Of(KeyPart.Entity(Player, 5), KeyPart.Category(Venue, "Away")), Measurement.Missing, Instant.FromUtc(new DateTime(2026, 1, 1)), Unit.None),
+        ]);
+        Assert.Equal([1L, 4L], Players(Transform.Top(1, Aggregators.Sum, Venue).Apply(block, TransformContext.Default)).Order());
+        Assert.Equal([2L, 3L], Players(Transform.Bottom(1, Aggregators.Sum, Venue).Apply(block, TransformContext.Default)).Order());
+    }
+
+    [Fact]
+    public void Rankings_have_stable_identities()
+    {
+        static string Id(ITransform t) => ((ICacheIdentity)t).CacheIdentity;
+        Assert.NotEqual(Id(Transform.Top(5, Aggregators.Sum)), Id(Transform.Bottom(5, Aggregators.Sum)));
+        Assert.NotEqual(Id(Transform.Top(5, Aggregators.Sum)), Id(Transform.Top(3, Aggregators.Sum)));
+        Assert.NotEqual(Id(Transform.Top(5, Aggregators.Sum)), Id(Transform.Top(5, Aggregators.Max)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Transform.Top(0, Aggregators.Sum));
+    }
+}

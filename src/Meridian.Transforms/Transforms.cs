@@ -63,6 +63,20 @@ public static class Transform
     /// </summary>
     public static ITransform ShareOf(params DimensionId[] across) => new ShareTransform(across);
 
+    /// <summary>
+    /// Keep the <paramref name="count"/> keys (players, venues…) with the highest score, and all their points. A
+    /// key's score is <paramref name="rankBy"/> over its values: after <c>Total(Sum, player)</c> each player has
+    /// one value, so <c>Top(5, Sum)</c> is the top five scorers; on monthly points it picks the five whose
+    /// monthly values sum highest and keeps every month of theirs, for a line chart of the top five. With
+    /// <paramref name="per"/>, the top <paramref name="count"/> within each value of those dimensions (the top
+    /// three at each venue). Exactly <paramref name="count"/> are kept: ties go to the lower key. Keys with no
+    /// values aren't ranked.
+    /// </summary>
+    public static ITransform Top(int count, IAggregator rankBy, params DimensionId[] per) => new RankTransform(count, rankBy, per, highest: true);
+
+    /// <summary>The <paramref name="count"/> keys with the lowest score — see <see cref="Top"/>.</summary>
+    public static ITransform Bottom(int count, IAggregator rankBy, params DimensionId[] per) => new RankTransform(count, rankBy, per, highest: false);
+
     /// <summary>Keep points whose <paramref name="dimension"/> is one of <paramref name="values"/> — e.g. home
     /// matches only. Entity ids match their number ("7"). Declarative, so it caches and can be stored.</summary>
     public static ITransform WhereIn(DimensionId dimension, params string[] values) =>
@@ -168,6 +182,62 @@ internal sealed class ShareTransform(DimensionId[] across) : IShareTransform, IC
     {
         foreach (var dimension in across) key = key.Without(dimension);
         return key;
+    }
+}
+
+internal sealed class RankTransform : IValueFilter, IDimensionalTransform, ICacheIdentity
+{
+    private readonly int _count;
+    private readonly IAggregator _rankBy;
+    private readonly DimensionId[] _per;
+    private readonly bool _highest;
+
+    public RankTransform(int count, IAggregator rankBy, DimensionId[] per, bool highest)
+    {
+        _count = count > 0 ? count : throw new ArgumentOutOfRangeException(nameof(count), count, "Keep at least one.");
+        _rankBy = rankBy ?? throw new ArgumentNullException(nameof(rankBy));
+        _per = per;
+        _highest = highest;
+    }
+
+    public IReadOnlyCollection<DimensionId> Dimensions => _per;
+
+    public string CacheIdentity =>
+        $"{(_highest ? "top" : "bottom")}({_count},{_rankBy.Name};{string.Join(",", _per.Select(d => d.Name).Order(StringComparer.Ordinal))})";
+
+    public PointBlock Apply(PointBlock input, TransformContext ctx)
+    {
+        // Each key's present values, in time order, for order-sensitive scores (first, last).
+        var values = new Dictionary<PointKey, List<(long At, double Value)>>();
+        for (int i = 0; i < input.Count; i++)
+        {
+            if ((input.Flags[i] & MeasureFlags.Missing) != 0) continue;
+            if (!values.TryGetValue(input.Keys[i], out var list)) values[input.Keys[i]] = list = [];
+            list.Add((input.AtTicks[i], input.Values[i]));
+        }
+
+        var kept = new HashSet<PointKey>();
+        foreach (var group in values.GroupBy(e => e.Key.Only(_per)))
+        {
+            var scored = new List<(PointKey Key, double Score)>();
+            foreach (var (key, list) in group)
+            {
+                var ordered = list.OrderBy(v => v.At).Select(v => v.Value).ToArray();
+                double score = _rankBy.Aggregate(ordered);
+                if (!double.IsNaN(score)) scored.Add((key, score));
+            }
+            var ranked = _highest
+                ? scored.OrderByDescending(s => s.Score).ThenBy(s => s.Key)
+                : scored.OrderBy(s => s.Score).ThenBy(s => s.Key);
+            foreach (var (key, _) in ranked.Take(_count)) kept.Add(key);
+        }
+
+        var output = PointBlock.Builder.Like(input);
+        for (int i = 0; i < input.Count; i++)
+        {
+            if (kept.Contains(input.Keys[i])) output.Add(input.Row(i));
+        }
+        return output.Build();
     }
 }
 
@@ -391,6 +461,7 @@ internal sealed class CumulativeTransform(IAggregator aggregator) : IAggregating
                         "max" => seen.Count == 1 ? v : Math.Max(running, v),
                         "mean" => running + (v - running) / seen.Count,
                         "last" => v,
+                        "first" => seen[0],
                         _ => aggregator.Aggregate(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(seen)),
                     };
                 }

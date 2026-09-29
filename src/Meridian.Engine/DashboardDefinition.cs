@@ -115,7 +115,8 @@ public sealed record CompareDefinition(string Unit, int Back = 1, string? Show =
 /// <c>where</c> (<c>dimension</c> and <c>in</c> or <c>notIn</c> — e.g. home matches only),
 /// <c>range</c> (<c>min</c> and/or <c>max</c> — keep values in range),
 /// <c>share</c> (<c>by</c> — each value as a % of the total across those dimensions),
-/// <c>cumulative</c> (<c>aggregator</c> — a running total, e.g. goals so far).
+/// <c>cumulative</c> (<c>aggregator</c> — a running total, e.g. goals so far),
+/// <c>top</c> / <c>bottom</c> (<c>n</c>, <c>aggregator</c> to rank by, optional <c>by</c> to rank within — e.g. the top 5 scorers).
 /// Periods: <c>day</c>, <c>week</c>, <c>month</c>, <c>season</c>, <c>hour</c>, or a span such as <c>15m</c> / <c>6h</c>.
 /// Gaps: <c>leave-missing</c> (default), <c>zero-fill</c>, <c>carry-forward</c>, <c>interpolate</c>.
 /// </summary>
@@ -130,7 +131,8 @@ public sealed record TransformDefinition(
     IReadOnlyList<string>? In = null,
     IReadOnlyList<string>? NotIn = null,
     double? Min = null,
-    double? Max = null)
+    double? Max = null,
+    int? N = null)
 {
     internal ITransform ToTransform(string path) => Kind?.ToLowerInvariant() switch
     {
@@ -141,12 +143,16 @@ public sealed record TransformDefinition(
         "total" => Transform.Total(ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))]),
         "where" => Where(path),
         "cumulative" => Transform.Cumulative(ParseAggregator(path)),
+        "top" or "bottom" => N is > 0
+            ? (Kind.Equals("top", StringComparison.OrdinalIgnoreCase) ? Transform.Top : (Func<int, IAggregator, DimensionId[], ITransform>)Transform.Bottom)(
+                N.Value, ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))])
+            : throw new DashboardDefinitionException(path + ".n", "how many to keep: a positive number."),
         "share" => By is { Count: > 0 } ? Transform.ShareOf([.. By.Select(d => new DimensionId(d))])
             : throw new DashboardDefinitionException(path + ".by", "a share needs the dimensions it's a share across, e.g. [\"athlete\"]."),
         "range" => Min is null && Max is null
             ? throw new DashboardDefinitionException(path, "a range needs a min, a max, or both.")
             : Transform.WhereValue(Min, Max),
-        _ => throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a transform; use resample, rolling, groupBy, total, where, range, share or cumulative."),
+        _ => throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a transform; use resample, rolling, groupBy, total, where, range, share, cumulative, top or bottom."),
     };
 
     private ITransform Where(string path)
@@ -162,7 +168,7 @@ public sealed record TransformDefinition(
 
     private IAggregator ParseAggregator(string path) =>
         Aggregator is { } name && Aggregators.TryResolve(name, out var aggregator) ? aggregator
-            : throw new DashboardDefinitionException(path + ".aggregator", $"'{Aggregator}' isn't an aggregator; use sum, mean, min, max, count, median or last.");
+            : throw new DashboardDefinitionException(path + ".aggregator", $"'{Aggregator}' isn't an aggregator; use sum, mean, min, max, count, median, first, last, stddev, variance, or a percentile such as p90.");
 
     private IPeriod ParsePeriod(string path)
     {

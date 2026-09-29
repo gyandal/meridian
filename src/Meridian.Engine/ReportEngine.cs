@@ -204,8 +204,8 @@ public sealed class ReportEngine(
         if (before.OfType<IValueFilter>().Any())
         {
             throw new ArgumentException(
-                $"A value filter before the last aggregation of derived metric '{metric.Id}' would apply to each of its inputs " +
-                $"({string.Join(", ", formula.Inputs)}), which is rarely meant. Filter the result instead: place the value filter after the last aggregation.", nameof(spec));
+                $"A value filter or ranking (top, bottom) before the last aggregation of derived metric '{metric.Id}' would apply to each of " +
+                $"its inputs ({string.Join(", ", formula.Inputs)}) separately, which is rarely meant. Filter or rank the result instead: place it after the last aggregation.", nameof(spec));
         }
         var after = spec.Transforms.Skip(last + 1).ToImmutableArray();
         if (formula is RatioFormula && after.OfType<IShareTransform>().Any())

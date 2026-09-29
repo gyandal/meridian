@@ -76,7 +76,17 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         [Aggregators.Count] = "count({v})",
         [Aggregators.Median] = "median({v})",
         [Aggregators.Last] = "arg_max({v}, {t}) FILTER (WHERE {v} IS NOT NULL)",
+        [Aggregators.First] = "arg_min({v}, {t}) FILTER (WHERE {v} IS NOT NULL)",
+        [Aggregators.StdDev] = "stddev_samp({v})",
+        [Aggregators.Variance] = "var_samp({v})",
     };
+
+    /// <summary>The SQL for a built-in aggregator, or null — a custom one is never guessed from its name.</summary>
+    private static string? SqlAggregate(IAggregator aggregator) =>
+        SqlAggregates.TryGetValue(aggregator, out var sql) ? sql
+            : Aggregators.IsPercentile(aggregator, out var percent)
+                ? "quantile_cont({v}, " + (percent / 100).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ")"
+                : null;
 
     public async Task<PointBlock> FetchAsync(
         MetricDefinition metric,
@@ -96,7 +106,7 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
         var time = options.Time;
         bool wallClockConvertible = time.Zone is null
             || (time.Resolution!.Ambiguous != AmbiguousTime.Reject && time.Resolution.Skipped != SkippedTime.Reject);
-        return wallClockConvertible && Truncate(rollup, "x") is not null && SqlAggregates.ContainsKey(rollup.Aggregator);
+        return wallClockConvertible && Truncate(rollup, "x") is not null && SqlAggregate(rollup.Aggregator) is not null;
     }
 
     public async Task<PointBlock> FetchRollupAsync(
@@ -181,7 +191,7 @@ public sealed class DuckDbPointSource(DuckDbSourceOptions options, DimensionId e
     /// <summary>A bucket's aggregate of one value column; all-NULL buckets come back as missing (not 0 or
     /// dropped), to match the engine.</summary>
     private static string Aggregate(RollupShape shape, string value) =>
-        $"CASE WHEN count({value}) = 0 THEN NULL ELSE CAST({SqlAggregates[shape.Aggregator].Replace("{v}", value).Replace("{t}", shape.OrderBy)} AS DOUBLE) END";
+        $"CASE WHEN count({value}) = 0 THEN NULL ELSE CAST({SqlAggregate(shape.Aggregator)!.Replace("{v}", value).Replace("{t}", shape.OrderBy)} AS DOUBLE) END";
 
     private Task<IReadOnlyDictionary<MetricId, PointBlock>> FetchLongAsync(
         List<MetricDefinition> metrics, IReadOnlyList<EntityRef> entities, DateInterval timeframe, RollupShape? shape,

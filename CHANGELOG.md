@@ -29,6 +29,13 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 - **Running totals**: `Transform.Cumulative(aggregator)` — goals so far — per key in time order; for a
   derived metric, goals so far ÷ minutes so far. Dashboard definitions gain a `cumulative` transform.
 - Demo: "goals so far, the last 12 months against the 12 before" on the example dashboard.
+- **Aggregators**: `First`, `StdDev` and `Variance` (sample), and `Percentile(p)` — by name `p90`, `p99.5` —
+  interpolating as `PERCENTILE.INC` / `quantile_cont`. All push down to DuckDB with exact parity.
+  `Aggregators.Names` lists them for APIs.
+- **Rankings**: `Transform.Top(n, rankBy, per…)` / `Bottom` keep the n highest- or lowest-scoring keys
+  and all their points (top scorers as bars, or the top five as monthly lines). Dashboard definitions gain
+  `top` / `bottom` (`n`, `aggregator`, `by`).
+- Demo: the top three by goal involvements on the example dashboard.
 
 ### Changed
 - A report that filters or groups by a dimension it doesn't keep is now an error that says to declare it
@@ -38,6 +45,10 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 - The demo API's `filterMin` / `filterMax` / `categoryValue` use the declarative filters, so those
   reports now hit the view cache.
 - The catalog rejects a formula that uses the same input twice.
+- `Measurement.Of(double.NaN)` is missing: NaN is never a value (JSON can't carry it; SQL gives NULL).
+  An aggregate with no value — the spread of one reading — is a gap in resampling, as in SQL.
+- The DuckDB source pushes down only built-in aggregators, matched by identity rather than name, so a
+  custom aggregator named "sum" is never computed as SQL `sum`.
 
 ## [0.1.0-preview.3] — 2026-09-25
 
