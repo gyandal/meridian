@@ -1341,6 +1341,95 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         public PointBlock Apply(PointBlock input, TransformContext ctx) => input;
     }
 
+    // ---------------------------------------------------------------------------------- filling across the timeframe
+
+    private static PipelineSpec AcrossTimeframe(MetricDefinition metric, DateInterval timeframe, IPeriod period, IAggregator aggregator) => PipelineSpec.Create(
+        "test", metric.Id, [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2)], timeframe,
+        new ViewSpec(ChartKind.Column, AxisSource.Time, SeriesBy: Athlete),
+        Transform.Resample(period, aggregator, GapPolicy.ZeroFill, FillAcross.Timeframe));
+
+    private static readonly DateInterval NovemberToJune = new(Instant.FromUtc(new DateTime(2024, 11, 1)), Instant.FromUtc(new DateTime(2025, 7, 1)));
+
+    [Theory]
+    [InlineData("UTC")]
+    [InlineData("Europe/London")]
+    public async Task Zero_fill_across_the_timeframe_pushes_down_and_zeroes_the_quiet_months_at_both_ends(string zone)
+    {
+        // Readings run from January to April; the report asks for November to June.
+        var spec = AcrossTimeframe(LoadDef, NovemberToJune, Period.Month, Aggregators.Sum);
+        await AssertParity(LoadDef, Source(), spec, In(zone));
+
+        // The timeframe ends at 1 July 00:00 UTC — 01:00 on 1 July in London, so London's July is (just) in it.
+        var view = await MeridianRuntime.InMemory(Catalog, Source()).Engine.RunAsync(spec, In(zone));
+        string[] months = ["2024-11", "2024-12", "2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06", .. zone == "UTC" ? Array.Empty<string>() : ["2025-07"]];
+        Assert.All(view.Series, s =>
+        {
+            Assert.Equal(months, s.Marks.Select(m => m.Label));
+            Assert.All(s.Marks.Where(m => m.Label is "2024-11" or "2024-12" or "2025-05" or "2025-06" or "2025-07"), m => Assert.Equal(0, m.Value));
+        });
+
+        // Without the option, only the months each series has data for (and between).
+        var observed = await MeridianRuntime.InMemory(Catalog, Source()).Engine.RunAsync(
+            spec with { Transforms = [Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill)] }, In(zone));
+        Assert.All(observed.Series, s => Assert.Equal(4, s.Marks.Count));
+    }
+
+    [Fact]
+    public async Task Local_dates_fill_across_the_timeframe_as_wall_clock_and_push_down()
+    {
+        var spec = AcrossTimeframe(WellnessDef, NovemberToJune, Period.Month, Aggregators.Mean);
+        await AssertParity(WellnessDef, Source("wellness", StoredTime.Local), spec, In("Pacific/Auckland"));
+        var view = await MeridianRuntime.InMemory(Catalog, Source("wellness", StoredTime.Local)).Engine.RunAsync(spec, In("Pacific/Auckland"));
+        Assert.All(view.Series, s => Assert.Equal(8, s.Marks.Count));
+    }
+
+    [Fact]
+    public async Task Daily_zero_fill_runs_to_the_last_london_day_of_the_timeframe()
+    {
+        // 25 April (BST) to 6 May 00:00 BST: readings stop on 30 April; 1–5 May are zeros, and 6 May isn't in.
+        var timeframe = new DateInterval(Instant.FromUtc(new DateTime(2025, 4, 24, 23, 0, 0)), Instant.FromUtc(new DateTime(2025, 5, 5, 23, 0, 0)));
+        var spec = AcrossTimeframe(LoadDef, timeframe, Period.Day, Aggregators.Sum);
+        await AssertParity(LoadDef, Source(), spec, In("Europe/London"));
+
+        var view = await MeridianRuntime.InMemory(Catalog, Source()).Engine.RunAsync(spec, In("Europe/London"));
+        Assert.All(view.Series, s =>
+        {
+            Assert.Equal(11, s.Marks.Count);
+            Assert.All(s.Marks.TakeLast(5), m => Assert.Equal(0, m.Value));
+        });
+    }
+
+    [Fact]
+    public async Task A_comparisons_baseline_fills_across_its_own_earlier_window()
+    {
+        // This year: May 2024 to April 2025. Last year's window is May 2023 to April 2024, and the matches only
+        // start in July 2023 — so the baseline's first two months are zeros, drawn as May and June 2024.
+        var timeframe = new DateInterval(Instant.FromUtc(new DateTime(2024, 5, 1)), Instant.FromUtc(new DateTime(2025, 5, 1)));
+        var report = SeasonReport(AppGoals.Id, timeframe, new ViewSpec(ChartKind.Column, AxisSource.Time),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill, FillAcross.Timeframe), Transform.GroupBy(Aggregators.Sum));
+
+        var lastYear = await MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine.RunAsync(report.Earlier(Baseline.YearsBack(1)), ProjectionOptions.Default);
+
+        var marks = lastYear.Series[0].Marks;
+        Assert.Equal(12, marks.Count);
+        Assert.Equal(["2024-05", "2024-06"], marks.Take(2).Select(m => m.Label));
+        Assert.Equal([0.0, 0.0], marks.Take(2).Select(m => m.Value!.Value));
+        Assert.Equal(SeasonSum("goals", Between(new(2023, 7, 1), new(2023, 8, 1))), marks[2].Value!.Value);
+    }
+
+    [Fact]
+    public void A_stored_resample_can_fill_across_the_timeframe_and_only_then_is_its_identity_different()
+    {
+        ICacheIdentity Resample(string? across) => (ICacheIdentity)Assert.IsType<ResampleTransform>(DashboardDefinition.Parse($$"""
+            {"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[
+              {"kind":"resample","period":"month","aggregator":"sum","gap":"zero-fill"{{(across is null ? "" : $",\"across\":\"{across}\"")}}}]}]}]}
+            """).ToDashboard().Charts[0].Series[0].Transforms[0]);
+
+        Assert.Equal("resample(month,sum,ZeroFill)", Resample(null).CacheIdentity);                 // existing keys unchanged
+        Assert.Equal(Resample(null).CacheIdentity, Resample("observed").CacheIdentity);
+        Assert.Equal("resample(month,sum,ZeroFill,timeframe)", Resample("timeframe").CacheIdentity);
+    }
+
     // ---------------------------------------------------------------------------------- semi-additive levels
 
     private static readonly DimensionId FamilyDim = new("family");
@@ -1543,6 +1632,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean","n":3,"until":"season-end"}]}]}]}""", "charts[0].series[0].transforms[0]")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean"}]}]}]}""", "charts[0].series[0].transforms[0]")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean","n":2,"range":150}]}]}]}""", "charts[0].series[0].transforms[0].range")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"resample","period":"month","aggregator":"sum","gap":"zero-fill","across":"season"}]}]}]}""", "charts[0].series[0].transforms[0].across")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"bottom","n":3,"aggregator":"p101"}]}]}]}""", "charts[0].series[0].transforms[0].aggregator")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","view":{"kind":"donut"}}]}]}""", "charts[0].series[0].view.kind")]
     public void A_bad_definition_says_exactly_where_the_problem_is(string json, string path)

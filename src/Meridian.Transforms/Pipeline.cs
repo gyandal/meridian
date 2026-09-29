@@ -7,6 +7,12 @@ namespace Meridian.Transforms;
 public sealed record TransformContext(CalendarContext Calendar)
 {
     public static TransformContext Default { get; } = new(CalendarContext.Default);
+
+    /// <summary>
+    /// The report's timeframe, in the data's terms — UTC for instants, wall clock for local values — or null when
+    /// there isn't one. A resample that fills across the timeframe (<see cref="FillAcross.Timeframe"/>) uses it.
+    /// </summary>
+    public DateInterval? Timeframe { get; init; }
 }
 
 /// <summary>

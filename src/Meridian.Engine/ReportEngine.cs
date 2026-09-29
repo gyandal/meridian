@@ -309,7 +309,7 @@ public sealed class ReportEngine(
                 signature = rollup.Signature;
                 // One point per bucket, so re-resampling with Last leaves values untouched while applying
                 // the gap policy exactly as the in-engine resample would.
-                transforms = transforms.SetItem(0, Transform.Resample(resample.Period, Aggregators.Last, resample.Gap));
+                transforms = transforms.SetItem(0, Transform.Resample(resample.Period, Aggregators.Last, resample.Gap, resample.Across));
             }
         }
 
@@ -387,7 +387,8 @@ public sealed class ReportEngine(
                 : Change(Compute(request with { Baseline = null }, raws, options), baseline, output);
         }
 
-        var context = new TransformContext(options.Calendar);
+        // The report's own window (a comparison's baseline runs with its shifted one): what a resample may fill across.
+        var context = new TransformContext(options.Calendar) { Timeframe = request.Spec.Timeframe };
         var blocks = request.Inputs.Select(p => Apply(p.Transforms, KeepOnly(raws[p.LoadKey], p.Keep, p.Metric.Additivity), context)).ToList();
         var combined = request.Formula switch
         {

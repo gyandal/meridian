@@ -27,12 +27,16 @@ public static class Resampler
         Unit? unit = null) =>
         Resample(PointBlock.FromRows(rows, unit), period, aggregator, gap, ctx);
 
+    /// <param name="fillWindow">For a filling gap policy, the window to fill across as well as between each series'
+    /// own points — the report's timeframe, in the data's terms (UTC for instants, wall clock for local values).
+    /// Null fills only the observed span.</param>
     public static PointBlock Resample(
         PointBlock input,
         IPeriod period,
         IAggregator aggregator,
         GapPolicy gap,
-        CalendarContext ctx)
+        CalendarContext ctx,
+        DateInterval? fillWindow = null)
     {
         ArgumentNullException.ThrowIfNull(period);
         ArgumentNullException.ThrowIfNull(aggregator);
@@ -58,6 +62,24 @@ public static class Resampler
         {
             at = input.AtTicks.ToArray();
             zone = input.Time.Zone;
+        }
+        // The window's edges on the same wall clock as the points: its first and last buckets are those
+        // containing its start and its last moment.
+        (long First, long Last)? window = null;
+        if (fillWindow is { } w && w.End.UtcTicks > w.Start.UtcTicks && gap != GapPolicy.LeaveMissing)
+        {
+            long start = w.Start.UtcTicks, last = w.End.UtcTicks - 1;
+            // Instants — including ones already bucketed in a zone (a pushed-down rollup, which says which zone drew
+            // it) — have a UTC timeframe, placed on that zone's wall clock like the points. Plain local values
+            // (dates as given, no zone) have a wall-clock timeframe, used as is.
+            var edgeZone = input.Time.Kind == TimeKind.Instant ? ctx.Zone
+                : input.Time.Zone is { } drawnIn ? TimeZones.Get(drawnIn) : null;
+            if (edgeZone is not null)
+            {
+                start = TimeZones.ToLocalTicks(start, edgeZone);
+                last = TimeZones.ToLocalTicks(last, edgeZone);
+            }
+            window = (period.BucketFor(new Instant(start), ctx.Floating).Start.UtcTicks, period.BucketFor(new Instant(last), ctx.Floating).Start.UtcTicks);
         }
         ctx = ctx.Floating; // everything below is plain calendar arithmetic on wall-clock ticks
 
@@ -111,7 +133,7 @@ public static class Resampler
                 continue;
             }
 
-            EmitWithGapFill(output, key, period, aggregator, gap, ctx, buckets);
+            EmitWithGapFill(output, key, period, aggregator, gap, ctx, buckets, window);
         }
 
         return output.Build();
@@ -124,12 +146,14 @@ public static class Resampler
         IAggregator aggregator,
         GapPolicy gap,
         CalendarContext ctx,
-        List<(long Start, List<double> Values)> buckets)
+        List<(long Start, List<double> Values)> buckets,
+        (long First, long Last)? window)
     {
         if (buckets.Count == 0) return;
 
-        long firstStart = buckets[0].Start;
-        long lastStart = buckets[^1].Start;
+        // The observed span, widened to the window when there is one (never narrowed: points outside it stay).
+        long firstStart = window is { } bounds ? Math.Min(buckets[0].Start, bounds.First) : buckets[0].Start;
+        long lastStart = window is { } edges ? Math.Max(buckets[^1].Start, edges.Last) : buckets[^1].Start;
 
         var aggregated = new Dictionary<long, double>();
         foreach (var (start, values) in buckets)
@@ -142,7 +166,7 @@ public static class Resampler
             }
         }
 
-        // Every bucket across the observed span, in order (fills the holes between first and last).
+        // Every bucket across the span, in order (fills the holes between first and last).
         var span = period
             .Buckets(new DateInterval(new Instant(firstStart), new Instant(lastStart + 1)), ctx)
             .Select(b => (Start: b.Start.UtcTicks, Value: aggregated.TryGetValue(b.Start.UtcTicks, out var v) ? (double?)v : null))

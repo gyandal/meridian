@@ -50,6 +50,19 @@ Consequences:
 
 Rolling windows are durations (a 28-day window is 28 × 24 h) and keep the kind of their input.
 
+**Filling gaps across the timeframe.** A filling gap policy (`ZeroFill`, `CarryForward`, `Interpolate`)
+fills the buckets between each series' own first and last points. For a column chart of monthly counts
+that loses a quiet first or last month — nothing happened is 0, not missing — so a resample can fill across
+the report's timeframe instead: `Transform.Resample(Period.Month, Sum, GapPolicy.ZeroFill, FillAcross.Timeframe)`
+(`"across": "timeframe"` in a dashboard definition). The buckets run from the one containing the timeframe's
+start to the one containing its last moment, with the timeframe's UTC edges placed on the calendar's wall
+clock like the points (local data's timeframe is already wall clock). So give the timeframe local-midnight
+edges for exact months: a timeframe ending at 1 July 00:00 UTC ends at 01:00 on 1 July in London, and
+July's bucket is in. `ZeroFill` fills the whole window; `CarryForward` still has nothing to carry before the
+first value, and `Interpolate` still needs a value on both sides. A series with no points at all produces
+nothing — the engine can't know it exists. The engine gives each report its own timeframe, including a
+comparison's baseline, which fills across its earlier window.
+
 Sub-daily buckets (`Period.Every(TimeSpan.FromMinutes(5))`, `Period.Hour`) follow the same rule: they
 are positions on the local clock, aligned to midnight. So on the night clocks go back, the repeated hour
 is one local bucket holding two hours of readings, and on the night they go forward the skipped hour has

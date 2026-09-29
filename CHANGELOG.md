@@ -11,6 +11,11 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
   semi-additive metric's dimensions, rows that fold to the same key and time are summed (missing if every
   part is), so `Resample(Month, Last)` gives the month-end total across the dropped dimension instead of one
   part of it. Such reports push down only a Sum; other aggregators run in the engine, with identical results.
+- **Filling gaps across the timeframe**: `Transform.Resample(period, aggregator, gap, FillAcross.Timeframe)`
+  (`"across": "timeframe"` in dashboard definitions) fills from the bucket holding the report's start to the
+  one holding its last moment, so a quiet first or last month is a 0 instead of missing. `TransformContext`
+  carries the report's `Timeframe`, set by the engine for every report and each comparison's baseline, and
+  kept when a resample is pushed down. The default (`FillAcross.Observed`) and its cache keys are unchanged.
 - **.NET 8 and 9 support.** Every package now targets `net8.0`, `net9.0` and `net10.0`, and the whole test
   suite runs on all three. Each app gets the build for its runtime, so .NET 10 apps keep the net10.0 build
   (and its faster runtime — see docs/BENCHMARKS.md). The only newer API in use, `System.Threading.Lock`,

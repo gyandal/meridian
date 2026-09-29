@@ -108,7 +108,8 @@ public sealed record CompareDefinition(string Unit, int Back = 1, string? Show =
 
 /// <summary>
 /// A declarative transform. <c>kind</c> is one of:
-/// <c>resample</c> (<c>period</c>, <c>aggregator</c>, optional <c>gap</c>),
+/// <c>resample</c> (<c>period</c>, <c>aggregator</c>, optional <c>gap</c>, and <c>across</c>: "observed" — the default — or
+/// "timeframe" to fill every bucket of the report's timeframe),
 /// <c>rolling</c> (<c>days</c>, <c>aggregator</c>),
 /// <c>groupBy</c> (<c>aggregator</c>, <c>by</c> — keeps time),
 /// <c>total</c> (<c>aggregator</c>, <c>by</c> — over the whole timeframe),
@@ -140,11 +141,12 @@ public sealed record TransformDefinition(
     int? Season = null,
     string? Until = null,
     double? Range = null,
-    bool? RunningTotal = null)
+    bool? RunningTotal = null,
+    string? Across = null)
 {
     internal ITransform ToTransform(string path) => Kind?.ToLowerInvariant() switch
     {
-        "resample" => Transform.Resample(ParsePeriod(path), ParseAggregator(path), ParseGap(path)),
+        "resample" => Transform.Resample(ParsePeriod(path), ParseAggregator(path), ParseGap(path), ParseAcross(path)),
         "rolling" => Days is > 0 ? Transform.Rolling(TimeSpan.FromDays(Days.Value), ParseAggregator(path))
             : throw new DashboardDefinitionException(path + ".days", "a rolling window needs a positive number of days."),
         "groupby" => Transform.GroupBy(ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))]),
@@ -204,6 +206,13 @@ public sealed record TransformDefinition(
 
     private IPeriod ParsePeriod(string path) => Time.Period.Named(Period)
         ?? throw new DashboardDefinitionException(path + ".period", $"'{Period}' isn't a period; use day, week, month, season, hour, or a span dividing a day such as 15m or 6h.");
+
+    private FillAcross ParseAcross(string path) => Across?.ToLowerInvariant() switch
+    {
+        null or "observed" => FillAcross.Observed,
+        "timeframe" => FillAcross.Timeframe,
+        _ => throw new DashboardDefinitionException(path + ".across", $"'{Across}' isn't a fill range; use observed or timeframe."),
+    };
 
     private GapPolicy ParseGap(string path) => Gap?.ToLowerInvariant() switch
     {
