@@ -115,6 +115,10 @@ public sealed class DuckDbDialect : SqlDialect
 
     public override string Parameter(string name) => "$" + name;
 
+    // DuckDB types a parameter from the column it's compared with, so against a DATE column 07:30 would become the
+    // whole date. Cast it: the date column is then compared as its midnight, as the engine does.
+    public override string TimeParameter(string name) => $"CAST(${name} AS TIMESTAMP)";
+
     public override void AddParameter(DbCommand command, string name, object value) =>
         command.Parameters.Add(new DuckDBParameter(name, value));
 

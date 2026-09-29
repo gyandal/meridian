@@ -27,7 +27,8 @@ cases are welcome as issues.
 
 ## Next
 
-- **More sources** — PostgreSQL / TimescaleDB, SQL Server, ClickHouse; each with pushdown where exact.
+- **More sources** — SQL Server and ClickHouse, each a `SqlDialect` over the shared engine and held to the
+  same parity suite; MySQL moved onto it (today it reads raw rows only).
 - **Round-aligned comparisons** — "after 5 appearances this season vs last": number each entity's
   points in time order and compare by number rather than date. Needs a metric with a row per appearance
   (minutes, or a derived metric): goals alone only have rows for matches with a goal, so numbering them

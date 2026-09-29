@@ -30,6 +30,7 @@ entities, timeframe, transforms, view.
 | `Meridian.Engine` | `PipelineSpec`, `ReportEngine` (`RunAsync`, `RunManyAsync`), `IPointSource` / `IRollupPointSource` / `IBatchPointSource`, `ViewCache`, `MeridianRuntime` wiring |
 | `Meridian.Sources.Sql` | the SQL engine every database source shares: layouts, dimensions, batching, exact time handling and pushdown, through a `SqlDialect` |
 | `Meridian.Sources.DuckDb` | DuckDB tables or Parquet in place — long (row per value) or wide (column per metric) — with pushdown and batching |
+| `Meridian.Sources.PostgreSql` | PostgreSQL / TimescaleDB tables and views — long or wide — with pushdown and batching |
 | `Meridian.Sources.MySql` | a MySQL datapoints table |
 | `Meridian.Hosts.Mcp` | agent tools: `describe` the catalog, `query` a bounded typed report |
 | `Meridian.Hosts.Http` (sample host) | minimal REST API and the dashboard |
@@ -330,6 +331,22 @@ pushdown whose zone conversions are generated from NodaTime's rules. What differ
 `SqlDialect` — connections, parameters, casts, timestamp arithmetic, calendar truncation, aggregate SQL. A
 dialect returns null for anything its database can't compute exactly, and that rollup falls back to a raw
 fetch, so a new database gets correctness from the shared engine and speed where its SQL allows.
+
+Every database source is held to one parity suite (`tests/Meridian.Sources.Sql.Tests`): the DuckDB test data —
+DST changes, wall-clock tables, NULLs, holes — is copied into the real database in a container, and for every
+zone, bucket, aggregator and gap policy the pushed-down result must equal the engine's result from raw rows
+*and* DuckDB's result for the same report; raw rows must read exactly as DuckDB reads them. Where Docker isn't
+available the suite is skipped rather than failed.
+
+**PostgreSQL** pushes down every built-in aggregator (ordered-set `percentile_cont`, an ordered `array_agg` for
+first and last) and every bucket; sub-daily buckets use `date_bin`, so PostgreSQL 14 or later. Sessions run in
+UTC — the source's own pool sets `Timezone=UTC`, and a borrowed `NpgsqlDataSource` has each connection switched
+to UTC when opened (set `Timezone=UTC` in its connection string to save that round trip) — so a `timestamptz`
+column reads exactly like a `timestamp` column holding UTC, whatever the server's or role's zone. Create one
+source per database and keep it: it owns (or borrows) a connection pool.
+
+Times are compared as timestamps whatever the column's type: a `DATE` compared with 07:30 on 1 January is its
+midnight, so it's outside a timeframe starting then — as the engine places dates.
 
 ## Testing
 

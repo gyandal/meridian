@@ -22,6 +22,13 @@ public abstract class SqlDialect : IDisposable
     /// <summary>A parameter reference in SQL text, e.g. <c>$start</c> or <c>@start</c>.</summary>
     public abstract string Parameter(string name);
 
+    /// <summary>
+    /// A timestamp parameter reference. It must compare as a timestamp whatever the column's type: a <c>DATE</c> column
+    /// compared with 07:30 on 1 January is before it (a date is its midnight), so that date is outside a timeframe
+    /// starting then — as in the engine. Override where the database would otherwise take the column's type.
+    /// </summary>
+    public virtual string TimeParameter(string name) => Parameter(name);
+
     /// <summary>Adds a parameter value to <paramref name="command"/> for <see cref="Parameter"/>(<paramref name="name"/>).</summary>
     public virtual void AddParameter(DbCommand command, string name, object value)
     {
