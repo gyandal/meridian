@@ -75,7 +75,7 @@ Meridian is not a BI tool or a query language: it's the reporting layer inside y
 
 ```bash
 dotnet add package Meridian.Engine --prerelease
-dotnet add package Meridian.Sources.DuckDb --prerelease   # or .PostgreSql, .MySql, or your own IPointSource
+dotnet add package Meridian.Sources.DuckDb --prerelease   # or .PostgreSql, .SqlServer, .MySql, or your own IPointSource
 dotnet add package Meridian.Views.Json --prerelease       # the JSON contract for ChartView
 ```
 
@@ -152,7 +152,7 @@ committed benchmark run, with history.
 | `Meridian.Core`, `Meridian.Time`, `Meridian.Transforms` | the point model, time handling, the transform algebra |
 | `Meridian.Caching`, `Meridian.Semantics` | cache and invalidation; the metric catalog |
 | `Meridian.Views`, `Meridian.Views.Json` | chart-agnostic views and their JSON contract |
-| `Meridian.Sources.DuckDb`, `Meridian.Sources.PostgreSql`, `Meridian.Sources.MySql` | data sources (`Meridian.Sources.Sql` is the engine the database ones share) |
+| `Meridian.Sources.DuckDb`, `Meridian.Sources.PostgreSql`, `Meridian.Sources.SqlServer`, `Meridian.Sources.MySql` | data sources (`Meridian.Sources.Sql` is the engine the database ones share) |
 | `Meridian.Hosts.Mcp` | the agent tool surface |
 
 ## Documentation
@@ -165,8 +165,8 @@ committed benchmark run, with history.
 
 ## Roadmap
 
-In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: SQL Server and
-ClickHouse sources, qualifying thresholds for rates, round-aligned comparisons, a Redis cache backend and
+In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: MySQL on the shared SQL
+engine, ClickHouse, qualifying thresholds for rates, round-aligned comparisons, a Redis cache backend and
 an MCP server. Later: scenario modelling. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing

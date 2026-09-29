@@ -103,6 +103,10 @@ public sealed class DuckDbFixture : IDisposable
                    'family' || f.f AS family, 'p' || p.p AS priority
             FROM range(1, 3) AS s(site), range(0, 120) AS d(d), range(1, 3) AS f(f), range(1, 4) AS p(p);
 
+            -- Whole-number readings in an INTEGER column: a mean of 3 and 4 is 3.5, whatever the column's type.
+            CREATE TABLE ints AS
+            SELECT entity_id, 'ints' AS metric, ts, CAST(round(value) AS INTEGER) AS value FROM datapoints WHERE metric = 'load';
+
             CREATE TABLE typed (entity_id INTEGER, metric VARCHAR, ts TIMESTAMP, value DECIMAL(10, 2));
             INSERT INTO typed VALUES (1, 'typed', TIMESTAMP '2025-02-01 10:00', 12.50), (1, 'typed', TIMESTAMP '2025-02-02 10:00', 7.25);
 

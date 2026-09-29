@@ -122,7 +122,10 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
     private RollupShape Shape(SourceRollup rollup, DateInterval timeframe)
     {
         var time = _options.Time;
-        var ts = _options.TimestampColumn;
+        // The column as a plain timestamp for arithmetic and bucketing (a dialect may normalise a zoned type to UTC);
+        // filters compare the column itself, so indexes and row-group pruning still apply.
+        var column = _options.TimestampColumn;
+        var ts = _sql.TimestampValue(column);
 
         // Every row's moment in UTC (instants) — converted from wall clock in SQL when the column is InZone —
         // then its wall clock in the report's zone. Local data is bucketed exactly as stored.
@@ -147,7 +150,7 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
             wallRange = ZoneSql.WallRange(time.Zone!, timeframe);
             exact = wallRange is null
                 ? $" AND {utc} >= {_sql.TimeParameter("utcStart")} AND {utc} < {_sql.TimeParameter("utcEnd")}"
-                : $" AND {ts} >= {_sql.TimeParameter("wallStart")} AND {ts} < {_sql.TimeParameter("wallEnd")}";
+                : $" AND {column} >= {_sql.TimeParameter("wallStart")} AND {column} < {_sql.TimeParameter("wallEnd")}";
         }
 
         // Buckets are local (docs/TIME.md): tagged with the grain, and with the zone that drew the boundaries.

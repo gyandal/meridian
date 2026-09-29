@@ -20,6 +20,7 @@
     <Project Path="src/Meridian.Sources.MySql/Meridian.Sources.MySql.csproj" />
     <Project Path="src/Meridian.Sources.PostgreSql/Meridian.Sources.PostgreSql.csproj" />
     <Project Path="src/Meridian.Sources.Sql/Meridian.Sources.Sql.csproj" />
+    <Project Path="src/Meridian.Sources.SqlServer/Meridian.Sources.SqlServer.csproj" />
     <Project Path="src/Meridian.Time/Meridian.Time.csproj" />
     <Project Path="src/Meridian.Transforms/Meridian.Transforms.csproj" />
     <Project Path="src/Meridian.Views.Json/Meridian.Views.Json.csproj" />

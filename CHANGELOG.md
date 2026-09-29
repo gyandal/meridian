@@ -6,6 +6,14 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 ## [Unreleased]
 
 ### Added
+- **SQL Server source** (`Meridian.Sources.SqlServer`): `SqlServerPointSource` for SQL Server 2016+ and Azure SQL,
+  with long and wide layouts, dimensions and batching. Mean, sum, min, max, count, standard deviation and variance
+  push down for every bucket; median, percentiles, first and last have no SQL Server aggregate, so they're computed
+  in the engine. `datetimeoffset` columns are read as UTC. Needs globalization-invariant mode off (a SqlClient
+  requirement).
+- `SqlDialect.TimestampValue`, for dialects whose zoned timestamp type must be normalised before bucketing.
+- The database parity suite runs against SQL Server too (1,265 cases), and gains integer-valued data, so a database
+  that averages integers as integers is caught.
 - **PostgreSQL source** (`Meridian.Sources.PostgreSql`): `PostgreSqlPointSource` over a connection string or an
   existing `NpgsqlDataSource`, with long and wide layouts, dimensions, batching, and every built-in aggregator
   and bucket pushed down (sub-daily buckets need PostgreSQL 14+). Sessions run in UTC, so `timestamptz` and

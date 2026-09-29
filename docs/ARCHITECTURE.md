@@ -31,6 +31,7 @@ entities, timeframe, transforms, view.
 | `Meridian.Sources.Sql` | the SQL engine every database source shares: layouts, dimensions, batching, exact time handling and pushdown, through a `SqlDialect` |
 | `Meridian.Sources.DuckDb` | DuckDB tables or Parquet in place — long (row per value) or wide (column per metric) — with pushdown and batching |
 | `Meridian.Sources.PostgreSql` | PostgreSQL / TimescaleDB tables and views — long or wide — with pushdown and batching |
+| `Meridian.Sources.SqlServer` | SQL Server and Azure SQL tables and views — long or wide — with pushdown and batching |
 | `Meridian.Sources.MySql` | a MySQL datapoints table |
 | `Meridian.Hosts.Mcp` | agent tools: `describe` the catalog, `query` a bounded typed report |
 | `Meridian.Hosts.Http` (sample host) | minimal REST API and the dashboard |
@@ -344,6 +345,15 @@ UTC — the source's own pool sets `Timezone=UTC`, and a borrowed `NpgsqlDataSou
 to UTC when opened (set `Timezone=UTC` in its connection string to save that round trip) — so a `timestamptz`
 column reads exactly like a `timestamp` column holding UTC, whatever the server's or role's zone. Create one
 source per database and keep it: it owns (or borrows) a connection pool.
+
+**SQL Server** (2016 and later) pushes down mean, sum, min, max, count, standard deviation and variance, over every
+bucket. It has no aggregate form of a median, a percentile, or the first or last value in time — `PERCENTILE_CONT`
+and `FIRST_VALUE` are window functions only — so reports using those are computed in the engine from raw rows: the
+same answer, fetched differently (the parity suite asserts exactly which fall back). `datetimeoffset` columns are
+normalised to UTC with each value's own offset before bucketing; `datetime2`, `datetime` and `date` are read as
+stored. Means and sums are taken in `float`, so an `int` column's mean isn't truncated. Metric names are sent as
+`varchar`, which keeps index seeks on a `varchar` or `nvarchar` metric column. Microsoft.Data.SqlClient doesn't
+run in globalization-invariant mode: an app using this source must leave `InvariantGlobalization` off.
 
 Times are compared as timestamps whatever the column's type: a `DATE` compared with 07:30 on 1 January is its
 midnight, so it's outside a timeframe starting then — as the engine places dates.
