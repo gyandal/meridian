@@ -3,13 +3,11 @@
     <IsPackable>true</IsPackable>
     <TargetFramework></TargetFramework>
     <TargetFrameworks>$(SupportedTargetFrameworks)</TargetFrameworks>
-    <Description>A Meridian IPointSource over a MySQL datapoints table, with configurable columns and stored-time handling.</Description>
+    <Description>Meridian IPointSource over MySQL 8: long or wide tables and views, with calendar bucketing and the standard aggregators pushed down into SQL, exactly.</Description>
+    <PackageTags>$(PackageTags);mysql</PackageTags>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />
-    <ProjectReference Include="../Meridian.Caching/Meridian.Caching.csproj" />
-    <ProjectReference Include="../Meridian.Semantics/Meridian.Semantics.csproj" />
-    <ProjectReference Include="../Meridian.Engine/Meridian.Engine.csproj" />
+    <ProjectReference Include="../Meridian.Sources.Sql/Meridian.Sources.Sql.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="MySqlConnector" Version="2.6.2" />

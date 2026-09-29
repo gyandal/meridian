@@ -165,8 +165,7 @@ committed benchmark run, with history.
 
 ## Roadmap
 
-In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: MySQL on the shared SQL
-engine, ClickHouse, qualifying thresholds for rates, round-aligned comparisons, a Redis cache backend and
+In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: a ClickHouse source, qualifying thresholds for rates, round-aligned comparisons, a Redis cache backend and
 an MCP server. Later: scenario modelling. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing

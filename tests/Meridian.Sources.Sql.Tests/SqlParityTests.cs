@@ -263,3 +263,11 @@ public sealed class SqlServerParityTests(SqlServerFixture db) : SqlParityTests(d
 
     protected override string Column(string name) => $"[{name}]";
 }
+
+public sealed class MySqlParityTests(MySqlFixture db) : SqlParityTests(db), IClassFixture<MySqlFixture>
+{
+    // No aggregate form of a median, a percentile, or first/last in time: those run in the engine.
+    protected override IReadOnlySet<string> Declined { get; } = new HashSet<string> { "median", "p90", "first", "last" };
+
+    protected override string Column(string name) => $"`{name}`";
+}
