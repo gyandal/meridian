@@ -407,10 +407,10 @@ public sealed class ReportEngine(
         {
             throw new InvalidOperationException("A ratio's inputs must have the same kind of time.");
         }
-        var totals = new Dictionary<(PointKey, long), double>();
+        var totals = new Dictionary<(PointKey, long), Measurement>();
         for (int i = 0; i < numerator.Count; i++)
         {
-            if ((numerator.Flags[i] & MeasureFlags.Missing) == 0) totals[(numerator.Keys[i], numerator.AtTicks[i])] = numerator.Values[i];
+            if ((numerator.Flags[i] & MeasureFlags.Missing) == 0) totals[(numerator.Keys[i], numerator.AtTicks[i])] = numerator.Row(i).Measure;
         }
 
         var output = new PointBlock.Builder(unit, denominator.Count > 0 ? denominator.Time : numerator.Time);
@@ -418,9 +418,10 @@ public sealed class ReportEngine(
         {
             double d = denominator.Values[i];
             if ((denominator.Flags[i] & MeasureFlags.Missing) != 0 || d == 0) continue;
-            double n = totals.TryGetValue((denominator.Keys[i], denominator.AtTicks[i]), out var v) ? v : 0;
+            var n = totals.TryGetValue((denominator.Keys[i], denominator.AtTicks[i]), out var v) ? v : Measurement.Of(0);
             long at = denominator.AtTicks[i];
-            output.Add(denominator.Keys[i], Measurement.Of(n / d * scale), at == PointBlock.NoAt ? null : new Instant(at));
+            bool estimated = n.IsEstimated || (denominator.Flags[i] & MeasureFlags.Estimated) != 0;
+            output.Add(denominator.Keys[i], Measurement.Of(n.Value / d * scale, estimated), at == PointBlock.NoAt ? null : new Instant(at));
         }
         return output.Build();
     }
@@ -440,10 +441,10 @@ public sealed class ReportEngine(
     /// <summary>current against the aligned baseline, for each (key, time) both have a value for.</summary>
     private static PointBlock Change(PointBlock current, PointBlock baseline, ComparisonOutput output)
     {
-        var before = new Dictionary<(PointKey, long), double>();
+        var before = new Dictionary<(PointKey, long), Measurement>();
         for (int i = 0; i < baseline.Count; i++)
         {
-            if ((baseline.Flags[i] & MeasureFlags.Missing) == 0) before[(baseline.Keys[i], baseline.AtTicks[i])] = baseline.Values[i];
+            if ((baseline.Flags[i] & MeasureFlags.Missing) == 0) before[(baseline.Keys[i], baseline.AtTicks[i])] = baseline.Row(i).Measure;
         }
 
         var result = new PointBlock.Builder(output == ComparisonOutput.PercentChange ? new Unit("%") : current.Unit, current.Time);
@@ -451,11 +452,13 @@ public sealed class ReportEngine(
         {
             if ((current.Flags[i] & MeasureFlags.Missing) != 0) continue;
             long at = current.AtTicks[i];
-            if (!before.TryGetValue((current.Keys[i], at), out double b)) continue;
+            if (!before.TryGetValue((current.Keys[i], at), out var earlier)) continue;
+            double b = earlier.Value;
             if (output == ComparisonOutput.PercentChange && b == 0) continue;
             double c = current.Values[i];
             double value = output == ComparisonOutput.PercentChange ? (c - b) / b * 100 : c - b;
-            result.Add(current.Keys[i], Measurement.Of(value), at == PointBlock.NoAt ? null : new Instant(at));
+            bool estimated = earlier.IsEstimated || (current.Flags[i] & MeasureFlags.Estimated) != 0;
+            result.Add(current.Keys[i], Measurement.Of(value, estimated), at == PointBlock.NoAt ? null : new Instant(at));
         }
         return result.Build();
     }
@@ -471,7 +474,7 @@ public sealed class ReportEngine(
         {
             throw new InvalidOperationException("A formula's inputs must have the same kind of time.");
         }
-        var totals = new Dictionary<(PointKey Key, long At), (double Sum, int Inputs)>();
+        var totals = new Dictionary<(PointKey Key, long At), (double Sum, int Inputs, bool Estimated)>();
         for (int t = 0; t < inputs.Count; t++)
         {
             var block = inputs[t];
@@ -480,16 +483,16 @@ public sealed class ReportEngine(
             {
                 if ((block.Flags[i] & MeasureFlags.Missing) != 0) continue;
                 var slot = (block.Keys[i], block.AtTicks[i]);
-                var (sum, seen) = totals.GetValueOrDefault(slot);
-                totals[slot] = (sum + coefficient * block.Values[i], seen + 1);
+                var (sum, seen, estimated) = totals.GetValueOrDefault(slot);
+                totals[slot] = (sum + coefficient * block.Values[i], seen + 1, estimated || (block.Flags[i] & MeasureFlags.Estimated) != 0);
             }
         }
 
         var output = new PointBlock.Builder(unit, present.Count > 0 ? present[0].Time : inputs[0].Time);
-        foreach (var ((key, at), (sum, seen)) in totals.OrderBy(e => e.Key.Key).ThenBy(e => e.Key.At))
+        foreach (var ((key, at), (sum, seen, estimated)) in totals.OrderBy(e => e.Key.Key).ThenBy(e => e.Key.At))
         {
             if (formula.Missing == MissingInput.NoValue && seen < inputs.Count) continue;
-            output.Add(key, Measurement.Of(sum), at == PointBlock.NoAt ? null : new Instant(at));
+            output.Add(key, Measurement.Of(sum, estimated), at == PointBlock.NoAt ? null : new Instant(at));
         }
         return output.Build();
     }

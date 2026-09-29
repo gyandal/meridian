@@ -116,7 +116,9 @@ public sealed record CompareDefinition(string Unit, int Back = 1, string? Show =
 /// <c>range</c> (<c>min</c> and/or <c>max</c> — keep values in range),
 /// <c>share</c> (<c>by</c> — each value as a % of the total across those dimensions),
 /// <c>cumulative</c> (<c>aggregator</c> — a running total, e.g. goals so far),
-/// <c>top</c> / <c>bottom</c> (<c>n</c>, <c>aggregator</c> to rank by, optional <c>by</c> to rank within — e.g. the top 5 scorers).
+/// <c>top</c> / <c>bottom</c> (<c>n</c>, <c>aggregator</c> to rank by, optional <c>by</c> to rank within — e.g. the top 5 scorers),
+/// <c>forecast</c> (<c>model</c>: mean, trend, seasonal-naive or holt-winters, with <c>season</c> — its length in
+/// buckets — where it has one; <c>n</c> buckets ahead, or <c>until</c>: "season-end").
 /// Periods: <c>day</c>, <c>week</c>, <c>month</c>, <c>season</c>, <c>hour</c>, or a span such as <c>15m</c> / <c>6h</c>.
 /// Gaps: <c>leave-missing</c> (default), <c>zero-fill</c>, <c>carry-forward</c>, <c>interpolate</c>.
 /// </summary>
@@ -132,7 +134,10 @@ public sealed record TransformDefinition(
     IReadOnlyList<string>? NotIn = null,
     double? Min = null,
     double? Max = null,
-    int? N = null)
+    int? N = null,
+    string? Model = null,
+    int? Season = null,
+    string? Until = null)
 {
     internal ITransform ToTransform(string path) => Kind?.ToLowerInvariant() switch
     {
@@ -143,6 +148,7 @@ public sealed record TransformDefinition(
         "total" => Transform.Total(ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))]),
         "where" => Where(path),
         "cumulative" => Transform.Cumulative(ParseAggregator(path)),
+        "forecast" => Transform.Forecast(ParseModel(path), ParseHorizon(path)),
         "top" or "bottom" => N is > 0
             ? (Kind.Equals("top", StringComparison.OrdinalIgnoreCase) ? Transform.Top : (Func<int, IAggregator, DimensionId[], ITransform>)Transform.Bottom)(
                 N.Value, ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))])
@@ -152,7 +158,7 @@ public sealed record TransformDefinition(
         "range" => Min is null && Max is null
             ? throw new DashboardDefinitionException(path, "a range needs a min, a max, or both.")
             : Transform.WhereValue(Min, Max),
-        _ => throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a transform; use resample, rolling, groupBy, total, where, range, share, cumulative, top or bottom."),
+        _ => throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a transform; use resample, rolling, groupBy, total, where, range, share, cumulative, top, bottom or forecast."),
     };
 
     private ITransform Where(string path)
@@ -166,27 +172,33 @@ public sealed record TransformDefinition(
         };
     }
 
+    private ForecastModel ParseModel(string path)
+    {
+        if (Season is <= 0) throw new DashboardDefinitionException(path + ".season", "a season is at least one bucket long.");
+        return Model?.ToLowerInvariant() switch
+        {
+            "mean" => ForecastModel.Mean,
+            "trend" => ForecastModel.Trend,
+            "seasonal-naive" => Season is { } m ? ForecastModel.SeasonalNaive(m)
+                : throw new DashboardDefinitionException(path + ".season", "a seasonal model needs the season's length in buckets, e.g. 12 for months."),
+            "holt-winters" => ForecastModel.HoltWinters(Season),
+            _ => throw new DashboardDefinitionException(path + ".model", $"'{Model}' isn't a forecast model; use mean, trend, seasonal-naive or holt-winters."),
+        };
+    }
+
+    private ForecastHorizon ParseHorizon(string path) => (N, Until?.ToLowerInvariant()) switch
+    {
+        ( > 0, null) => ForecastHorizon.Buckets(N.Value),
+        (null, "season-end") => ForecastHorizon.SeasonEnd,
+        _ => throw new DashboardDefinitionException(path, "a forecast reaches either n buckets ahead or until \"season-end\"."),
+    };
+
     private IAggregator ParseAggregator(string path) =>
         Aggregator is { } name && Aggregators.TryResolve(name, out var aggregator) ? aggregator
             : throw new DashboardDefinitionException(path + ".aggregator", $"'{Aggregator}' isn't an aggregator; use sum, mean, min, max, count, median, first, last, stddev, variance, or a percentile such as p90.");
 
-    private IPeriod ParsePeriod(string path)
-    {
-        switch (Period?.ToLowerInvariant())
-        {
-            case "day": return Time.Period.Day;
-            case "week": return Time.Period.Week;
-            case "month": return Time.Period.Month;
-            case "season": return Time.Period.Season;
-            case "hour": return Time.Period.Hour;
-        }
-        if (Period is { Length: > 1 } p && int.TryParse(p[..^1], NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n > 0)
-        {
-            var span = char.ToLowerInvariant(p[^1]) switch { 'm' => TimeSpan.FromMinutes(n), 'h' => TimeSpan.FromHours(n), _ => TimeSpan.Zero };
-            if (span > TimeSpan.Zero && TimeSpan.TicksPerDay % span.Ticks == 0) return Time.Period.Every(span);
-        }
-        throw new DashboardDefinitionException(path + ".period", $"'{Period}' isn't a period; use day, week, month, season, hour, or a span dividing a day such as 15m or 6h.");
-    }
+    private IPeriod ParsePeriod(string path) => Time.Period.Named(Period)
+        ?? throw new DashboardDefinitionException(path + ".period", $"'{Period}' isn't a period; use day, week, month, season, hour, or a span dividing a day such as 15m or 6h.");
 
     private GapPolicy ParseGap(string path) => Gap?.ToLowerInvariant() switch
     {

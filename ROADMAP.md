@@ -18,7 +18,8 @@ cases are welcome as issues.
   value), sums and differences of metrics, shares of a total, comparisons with an earlier period
   (year-on-year, season-on-season, the same week last year; overlay, difference or % change) and running
   totals, and aggregators beyond the basics (first, standard deviation, variance, any percentile — all
-  pushed down) with top / bottom N rankings
+  pushed down) with top / bottom N rankings, and forecasting (pace, trend, seasonal naïve, Holt /
+  Holt-Winters) with projected points marked through every later step
 - Sources: DuckDB (tables and Parquet in place, long or wide layout), MySQL
 - Hosts: REST API with a dashboard, an agent (MCP-style) tool surface
 - Benchmarks: synthetic to 1B rows, NYC taxi, TSBS ([BENCHMARKS.md](docs/BENCHMARKS.md))
@@ -39,8 +40,9 @@ cases are welcome as issues.
 
 ## Later
 
-- **Forecasting** — `Project(horizon, model)`: seasonal-naïve, trend and Holt-Winters to start; projected
-  points flagged `Estimated` so they're visibly distinct from observed data.
+- **Forecast ranges** — prediction intervals ("between 11 and 17 by the end of the season") drawn as a
+  band. A point forecast without its uncertainty overstates what's known; the view model needs a band
+  first.
 - **Scenario modelling** — perturb a baseline or forecast ("load +10% from March") and compare, reusing
   the same view and compare machinery.
 - **Per-event local day** — bucket by the local date where each event happened (entities that travel

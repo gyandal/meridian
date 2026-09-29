@@ -15,6 +15,35 @@ public static class Period
     /// <summary>Fixed clock-aligned buckets — every 1 minute, 5 minutes, 1 hour… The span must divide a day,
     /// so buckets line up with midnight. Like every period they are local clock positions (docs/TIME.md).</summary>
     public static IPeriod Every(TimeSpan span) => span == TimeSpan.FromHours(1) ? Hour : new FixedPeriod(span);
+
+    /// <summary>
+    /// The period with this name, or null: <c>day</c>, <c>week</c>, <c>month</c>, <c>season</c>, <c>hour</c>, or a
+    /// span dividing a day — <c>15m</c>, <c>6h</c>, <c>30s</c>. Every period's <see cref="IPeriod.Name"/> resolves
+    /// back to it, so a time axis's grain says which buckets it has.
+    /// </summary>
+    public static IPeriod? Named(string? name)
+    {
+        switch (name?.ToLowerInvariant())
+        {
+            case "day": return Day;
+            case "week": return Week;
+            case "month": return Month;
+            case "season": return Season;
+            case "hour": return Hour;
+        }
+        if (name is { Length: > 1 } && long.TryParse(name[..^1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) && n > 0)
+        {
+            var span = char.ToLowerInvariant(name[^1]) switch
+            {
+                's' => TimeSpan.FromSeconds(n),
+                'm' => TimeSpan.FromMinutes(n),
+                'h' => TimeSpan.FromHours(n),
+                _ => TimeSpan.Zero,
+            };
+            if (span > TimeSpan.Zero && TimeSpan.TicksPerDay % span.Ticks == 0) return Every(span);
+        }
+        return null;
+    }
 }
 
 /// <summary>

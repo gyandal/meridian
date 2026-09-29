@@ -29,6 +29,12 @@ public readonly record struct Measurement(double Value, MeasureFlags Flags)
     /// reading, a percentage of zero): charts and JSON have no NaN, and SQL gives NULL for the same cases.</summary>
     public static Measurement Of(double value) => double.IsNaN(value) ? Missing : new(value, MeasureFlags.None);
 
+    /// <summary>A value that is <paramref name="estimated"/> — a forecast, or computed from one — or observed.</summary>
+    public static Measurement Of(double value, bool estimated) =>
+        double.IsNaN(value) ? Missing : new(value, estimated ? MeasureFlags.Estimated : MeasureFlags.None);
+
+    public bool IsEstimated => (Flags & MeasureFlags.Estimated) != 0;
+
     public static implicit operator Measurement(double value) => Of(value);
 
     public override string ToString() => IsPresent ? Value.ToString("R") : "—";

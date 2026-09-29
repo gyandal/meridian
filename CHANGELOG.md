@@ -36,6 +36,14 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
   and all their points (top scorers as bars, or the top five as monthly lines). Dashboard definitions gain
   `top` / `bottom` (`n`, `aggregator`, `by`).
 - Demo: the top three by goal involvements on the example dashboard.
+- **Forecasting**: `Transform.Forecast(model, horizon)` with `ForecastModel.Mean` (pace), `Trend`,
+  `SeasonalNaive(m)` and `HoltWinters()` / `HoltWinters(m)` (weights fitted deterministically), to
+  `ForecastHorizon.Buckets(n)` or `SeasonEnd`. Projected points are flagged estimated, and so is anything
+  computed from them — group totals, rolling windows, running totals, shares, formulas and comparisons.
+  Views mark them (`MarkView.Estimated`). Dashboard definitions gain `forecast` (`model`, `season`, `n` or
+  `until: "season-end"`).
+- `Period.Named(name)` resolves a period from its name, including spans such as `15m` or `30s`.
+- Demo: "goals on pace for" on the example dashboard, with projected points drawn dotted.
 
 ### Changed
 - A report that filters or groups by a dimension it doesn't keep is now an error that says to declare it
@@ -45,6 +53,7 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 - The demo API's `filterMin` / `filterMax` / `categoryValue` use the declarative filters, so those
   reports now hit the view cache.
 - The catalog rejects a formula that uses the same input twice.
+- Resampling points that include forecasts is an error: forecast at the grain you show.
 - `Measurement.Of(double.NaN)` is missing: NaN is never a value (JSON can't carry it; SQL gives NULL).
   An aggregate with no value — the spread of one reading — is a gap in resampling, as in SQL.
 - The DuckDB source pushes down only built-in aggregators, matched by identity rather than name, so a

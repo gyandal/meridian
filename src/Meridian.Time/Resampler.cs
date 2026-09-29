@@ -37,6 +37,14 @@ public static class Resampler
         ArgumentNullException.ThrowIfNull(period);
         ArgumentNullException.ThrowIfNull(aggregator);
         ArgumentNullException.ThrowIfNull(ctx);
+        for (int i = 0; i < input.Count; i++)
+        {
+            if ((input.Flags[i] & MeasureFlags.Estimated) != 0)
+            {
+                throw new InvalidOperationException(
+                    "These points include forecasts; resampling would mix them into observed buckets. Forecast at the grain you show: resample first, then forecast.");
+            }
+        }
 
         long[] at;
         string? zone;
