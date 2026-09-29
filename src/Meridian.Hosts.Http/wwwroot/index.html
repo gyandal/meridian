@@ -184,19 +184,27 @@ function renderChart(svg, view){
   barSeries.forEach((s,bi)=>{ const {Y}=scales[axisOf(s)];
     s.marks.forEach(k=>{ if(k.value==null)return;
       const x=X(k)-slotW*0.4+bi*bw;
-      const r=el("rect",{x:x+1,y:Y(k.value),width:Math.max(1,bw-2),height:m.t+ih-Y(k.value),rx:2,fill:k.colorToken||s.colorToken});
+      const col=k.colorToken||s.colorToken;
+      const r=el("rect",{x:x+1,y:Y(k.value),width:Math.max(1,bw-2),height:m.t+ih-Y(k.value),rx:2,fill:col,
+        "fill-opacity":k.estimated?.3:null,stroke:k.estimated?col:null,"stroke-dasharray":k.estimated?"3 2":null});
       r.appendChild(tip(k));svg.appendChild(r);});
   });
   view.series.filter(s=>kindOf(s)!=="Column").forEach(s=>{ const {Y,ymin}=scales[axisOf(s)];
     const pts=s.marks.filter(k=>k.value!=null).map(k=>[X(k),Y(k.value),k]);
     if(!pts.length)return;
-    const d=pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
+    const path=ps=>ps.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
+    const d=path(pts);
     if(kindOf(s)==="Area"){svg.appendChild(el("path",{d:d+` L ${pts[pts.length-1][0]} ${Y(ymin)} L ${pts[0][0]} ${Y(ymin)} Z`,fill:s.colorToken,opacity:.13}));}
-    svg.appendChild(el("path",{d,fill:"none",stroke:s.colorToken,"stroke-width":2,"stroke-linejoin":"round","stroke-dasharray":axisOf(s)===2?"5 3":null}));
-    pts.forEach(([x,y,k])=>{const c=el("circle",{cx:x,cy:y,r:2.8,fill:k.colorToken||s.colorToken});c.appendChild(tip(k));svg.appendChild(c);});
+    // Observed as a solid line; projected (estimated) points continue it as a faint dotted one.
+    const seen=pts.filter(p=>!p[2].estimated), cut=seen.length?pts.indexOf(seen[seen.length-1]):0;
+    if(seen.length)svg.appendChild(el("path",{d:path(seen),fill:"none",stroke:s.colorToken,"stroke-width":2,"stroke-linejoin":"round","stroke-dasharray":axisOf(s)===2?"5 3":null}));
+    if(seen.length<pts.length)svg.appendChild(el("path",{d:path(pts.slice(cut)),fill:"none",stroke:s.colorToken,"stroke-width":2,"stroke-dasharray":"2 4",opacity:.8}));
+    pts.forEach(([x,y,k])=>{const col=k.colorToken||s.colorToken;
+      const c=el("circle",{cx:x,cy:y,r:2.8,fill:k.estimated?"var(--panel)":col,stroke:k.estimated?col:null,"stroke-width":k.estimated?1.5:null});
+      c.appendChild(tip(k));svg.appendChild(c);});
   });
   svg.appendChild(el("line",{x1:m.l,y1:m.t+ih,x2:W-m.r,y2:m.t+ih,stroke:"var(--line)"}));
-  function tip(k){const t=document.createElementNS(NS,"title");t.textContent=`${k.label}: ${f1(k.value)}${k.status&&k.status!=="Neutral"?"  ("+k.status+")":""}`;return t;}
+  function tip(k){const t=document.createElementNS(NS,"title");t.textContent=`${k.label}: ${f1(k.value)}${k.estimated?"  (projected)":""}${k.status&&k.status!=="Neutral"?"  ("+k.status+")":""}`;return t;}
 }
 function legendHtml(view){return view.series.map(s=>`<span><i style="background:${s.colorToken}"></i>${s.name}${s.axis===2?" (right axis)":""}</span>`).join("");}
 

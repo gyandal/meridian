@@ -1208,6 +1208,72 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         }
     }
 
+    // ---------------------------------------------------------------------------------- forecasting
+
+    private static readonly DateInterval FirstHalf2425 = new(Instant.FromUtc(new DateTime(2024, 7, 1)), Instant.FromUtc(new DateTime(2025, 1, 1)));
+
+    private static PipelineSpec OnPace(MetricId metric) => SeasonReport(metric, FirstHalf2425, new ViewSpec(ChartKind.Line, AxisSource.Time),
+        Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill), Transform.GroupBy(Aggregators.Sum),
+        Transform.Forecast(ForecastModel.Mean, ForecastHorizon.SeasonEnd), Transform.Cumulative(Aggregators.Sum));
+
+    [Fact]
+    public async Task On_pace_for_is_goals_so_far_carried_to_the_end_of_the_season()
+    {
+        var view = await MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine.RunAsync(OnPace(AppGoals.Id), ProjectionOptions.Default);
+
+        var marks = view.Series[0].Marks;
+        Assert.Equal(12, marks.Count);                                              // July to June
+        Assert.All(marks.Take(6), m => Assert.Null(m.Estimated));                   // July–December happened
+        Assert.All(marks.Skip(6), m => Assert.True(m.Estimated));                   // January–June are projected
+        double soFar = SeasonSum("goals", Between(new(2024, 7, 1), new(2025, 1, 1)));
+        Assert.Equal(soFar, marks[5].Value!.Value);
+        Assert.Equal(2 * soFar, marks[^1].Value!.Value, 9);                         // six months at the same pace
+    }
+
+    [Fact]
+    public async Task A_projected_rate_is_projected_goals_over_projected_minutes_and_is_marked_so()
+    {
+        // The forecast runs on goals and minutes separately (it's before the running total), and the rate divides
+        // the projected totals.
+        var view = await MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine.RunAsync(OnPace(GoalsPer90.Id), ProjectionOptions.Default);
+
+        var june = view.Series[0].Marks[^1];
+        var soFar = Between(new(2024, 7, 1), new(2025, 1, 1));
+        Assert.True(june.Estimated);
+        Assert.Equal(90.0 * SeasonSum("goals", soFar) / SeasonSum("minutes", soFar), june.Value!.Value, 9); // 2G / 2M
+        Assert.Null(view.Series[0].Marks[5].Estimated);
+
+        // So is a sum of metrics built on a forecast, and a comparison with one.
+        var engine = MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine;
+        var involvements = await engine.RunAsync(OnPace(Involvements.Id), ProjectionOptions.Default);
+        Assert.Equal([false, true], new[] { 5, 11 }.Select(i => involvements.Series[0].Marks[i].Estimated == true));
+        var change = await engine.RunAsync(OnPace(AppGoals.Id).ChangeFrom(Baseline.SeasonsBack(1), ComparisonOutput.Difference), ProjectionOptions.Default);
+        Assert.Equal([false, true], new[] { 5, 11 }.Select(i => change.Series[0].Marks[i].Estimated == true));
+    }
+
+    [Fact]
+    public async Task A_stored_dashboard_can_forecast_and_the_view_is_cached()
+    {
+        var dashboard = DashboardDefinition.Parse("""
+            { "title": "Pace", "charts": [ { "title": "Goals: on pace for", "series": [ { "metric": "goals",
+              "transforms": [ { "kind": "resample", "period": "month", "aggregator": "sum", "gap": "zero-fill" },
+                              { "kind": "groupBy", "aggregator": "sum" },
+                              { "kind": "forecast", "model": "mean", "until": "season-end" },
+                              { "kind": "cumulative", "aggregator": "sum" } ] } ] } ] }
+            """).ToDashboard();
+        var context = new DashboardContext("club", [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2), new EntityRef(Athlete, 3)], FirstHalf2425);
+        var counting = new CountingSource(SeasonsSource());
+        var engine = MeridianRuntime.InMemory(AppCatalog, counting).Engine;
+
+        var view = await engine.RunDashboardAsync(dashboard, context, ProjectionOptions.Default);
+        int fetches = counting.Raws + counting.Rollups + counting.Batches.Count;
+        var again = await engine.RunDashboardAsync(dashboard, context, ProjectionOptions.Default);
+
+        Assert.Equal(2 * SeasonSum("goals", Between(new(2024, 7, 1), new(2025, 1, 1))), view.Charts[0].View.Series[0].Marks[^1].Value!.Value, 9);
+        Assert.Equal(fetches, counting.Raws + counting.Rollups + counting.Batches.Count);
+        Assert.Equal(view.Charts[0].View.Series[0].Marks, again.Charts[0].View.Series[0].Marks);
+    }
+
     private static PipelineSpec Monthly(MetricDefinition metric, ChartKind kind, params long[] athletes) => PipelineSpec.Create(
         "club", metric.Id, [.. (athletes.Length == 0 ? [1L] : athletes).Select(a => new EntityRef(Athlete, a))], FirstHalf,
         new ViewSpec(kind, AxisSource.Time, SeriesBy: athletes.Length > 1 ? Athlete : null),
@@ -1344,6 +1410,10 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","compare":{"unit":"season","show":"ratio"}}]}]}""", "charts[0].series[0].compare.show")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"cumulative"}]}]}]}""", "charts[0].series[0].transforms[0].aggregator")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"top","aggregator":"sum"}]}]}]}""", "charts[0].series[0].transforms[0].n")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"prophet","n":3}]}]}]}""", "charts[0].series[0].transforms[0].model")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"seasonal-naive","n":3}]}]}]}""", "charts[0].series[0].transforms[0].season")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean","n":3,"until":"season-end"}]}]}]}""", "charts[0].series[0].transforms[0]")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean"}]}]}]}""", "charts[0].series[0].transforms[0]")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"bottom","n":3,"aggregator":"p101"}]}]}]}""", "charts[0].series[0].transforms[0].aggregator")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","view":{"kind":"donut"}}]}]}""", "charts[0].series[0].view.kind")]
     public void A_bad_definition_says_exactly_where_the_problem_is(string json, string path)

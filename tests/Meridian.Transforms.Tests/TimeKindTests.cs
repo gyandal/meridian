@@ -310,3 +310,124 @@ public class RankTests
         Assert.Throws<ArgumentOutOfRangeException>(() => Transform.Top(0, Aggregators.Sum));
     }
 }
+
+public class ForecastTests
+{
+    private static readonly DimensionId Player = new("player");
+
+    private static double[] Project(ForecastModel model, int horizon, params double[] history) => model.Project(history, horizon);
+
+    [Fact]
+    public void Models_continue_the_patterns_they_model()
+    {
+        Assert.Equal([3.0, 3.0], Project(ForecastModel.Mean, 2, 2, 4, 3));
+        Assert.Equal([9.0, 11.0], Project(ForecastModel.Trend, 2, 1, 3, 5, 7), new ToleranceComparer());
+        Assert.Equal([10.0, 20.0, 30.0, 10.0], Project(ForecastModel.SeasonalNaive(3), 4, 99, 10, 20, 30));
+
+        // A line plus a repeating pattern is continued exactly by Holt-Winters, whatever weights it picks.
+        double[] pattern = [5, -2, 0, -3];
+        double Y(int t) => 10 + 0.5 * t + pattern[t % 4];
+        var history = Enumerable.Range(0, 12).Select(Y).ToArray();
+        Assert.Equal(Enumerable.Range(12, 6).Select(Y), ForecastModel.HoltWinters(4).Project(history, 6), new ToleranceComparer());
+        Assert.Equal([12.0, 14.0], Project(ForecastModel.HoltWinters(), 2, 2, 4, 6, 8, 10), new ToleranceComparer()); // Holt: a line
+    }
+
+    [Fact]
+    public void Holt_Winters_picks_its_weights_deterministically_from_noisy_data()
+    {
+        var rng = new Random(7);
+        var noisy = Enumerable.Range(0, 24).Select(t => 20 + t + (t % 12 < 6 ? 8 : -8) + rng.NextDouble() * 4).ToArray();
+        var once = ForecastModel.HoltWinters(12).Project(noisy, 12);
+        Assert.Equal(once, ForecastModel.HoltWinters(12).Project(noisy, 12));
+        Assert.True(once.Take(6).Average() > once.Skip(6).Average()); // the high half of the season stays high
+
+        // A level that steps up: the weights that fit best follow the step; slow ones would still be climbing.
+        var stepped = Enumerable.Range(0, 30).Select(t => t < 20 ? 10.0 : 20.0).ToArray();
+        Assert.InRange(ForecastModel.HoltWinters().Project(stepped, 1)[0], 19, 21);
+    }
+
+    private static PointBlock Months(params (long Player, int Month, double? Value)[] rows) => PointBlock.FromRows(
+        [.. rows.Select(r => new Point(PointKey.Of(KeyPart.Entity(Player, r.Player)), r.Value is { } v ? Measurement.Of(v) : Measurement.Missing,
+            new Instant(new DateTime(2025, 1, 1).AddMonths(r.Month - 1).Ticks), Unit.None))],
+        time: TimeAxis.Local("month", "Europe/London"));
+
+    private static List<(long Player, string Month, double Value, bool Estimated)> Rows(PointBlock block) =>
+        [.. Enumerable.Range(0, block.Count).Select(i => (block.Keys[i].TryGet(Player, out var p) ? p.Numeric : 0,
+            new DateTime(block.AtTicks[i]).ToString("yyyy-MM"), block.Values[i], (block.Flags[i] & MeasureFlags.Estimated) != 0))];
+
+    [Fact]
+    public void Every_key_is_projected_over_the_same_future_buckets_from_its_own_history()
+    {
+        // Player 1 runs to March; player 2 stopped in February, so March is its second step ahead.
+        var block = Months((1, 1, 1), (1, 2, 2), (1, 3, 3), (2, 1, 10), (2, 2, 20));
+        var trend = Transform.Forecast(ForecastModel.Mean, ForecastHorizon.Buckets(2)).Apply(block, TransformContext.Default);
+        var future = Rows(trend).Where(r => r.Estimated).ToList();
+
+        Assert.Equal(5, Rows(trend).Count(r => !r.Estimated));  // the history, untouched
+        Assert.Equal([(1L, "2025-04", 2.0, true), (1L, "2025-05", 2.0, true), (2L, "2025-04", 15.0, true), (2L, "2025-05", 15.0, true)], future);
+
+        var steps = Rows(Transform.Forecast(ForecastModel.SeasonalNaive(2), ForecastHorizon.Buckets(1)).Apply(block, TransformContext.Default))
+            .Where(r => r.Estimated).ToList();
+        Assert.Equal([(1L, "2025-04", 2.0, true), (2L, "2025-04", 20.0, true)], steps); // two and three steps ahead
+    }
+
+    [Fact]
+    public void To_the_end_of_the_season_follows_the_season_calendar()
+    {
+        var block = Months((1, 1, 4), (1, 2, 4), (1, 3, 4)); // January to March; the season runs July to June
+        var toEnd = Rows(Transform.Forecast(ForecastModel.Mean, ForecastHorizon.SeasonEnd).Apply(block, TransformContext.Default));
+        Assert.Equal(["2025-04", "2025-05", "2025-06"], toEnd.Where(r => r.Estimated).Select(r => r.Month));
+    }
+
+    [Fact]
+    public void Gaps_are_bridged_for_fitting_short_series_are_not_projected_and_time_is_required()
+    {
+        var gappy = Months((1, 1, 1), (1, 2, null), (1, 3, 3), (1, 5, 5), (2, 1, 7));
+        var trend = Rows(Transform.Forecast(ForecastModel.Trend, ForecastHorizon.Buckets(1)).Apply(gappy, TransformContext.Default));
+        Assert.Equal([(1L, "2025-06", 6.0, true)], trend.Where(r => r.Estimated).Select(r => (r.Player, r.Month, Math.Round(r.Value, 9), r.Estimated)));
+
+        // Player 2 has two months; a model that needs a three-month season leaves it without a forecast.
+        var seasonal = Transform.Forecast(ForecastModel.SeasonalNaive(3), ForecastHorizon.Buckets(1))
+            .Apply(Months((1, 1, 1), (1, 2, 2), (1, 3, 3), (2, 2, 5), (2, 3, 6)), TransformContext.Default);
+        Assert.Equal(6, seasonal.Count);
+        Assert.Equal([1L], Rows(seasonal).Where(r => r.Estimated).Select(r => r.Player));
+
+        var raw = PointBlock.FromRows([new Point(PointKey.Of(KeyPart.Entity(Player, 1)), 1, Instant.FromUtc(new DateTime(2025, 1, 1)))]);
+        Assert.Contains("resample", Assert.Throws<InvalidOperationException>(() =>
+            Transform.Forecast(ForecastModel.Mean, ForecastHorizon.Buckets(1)).Apply(raw, TransformContext.Default)).Message);
+    }
+
+    [Fact]
+    public void Anything_computed_from_a_forecast_is_estimated_and_resampling_one_is_refused()
+    {
+        var block = Months((1, 1, 2), (1, 2, 2), (2, 1, 1), (2, 2, 1));
+        var projected = Transform.Forecast(ForecastModel.Mean, ForecastHorizon.Buckets(2)).Apply(block, TransformContext.Default);
+
+        var soFar = Rows(Transform.Cumulative(Aggregators.Sum).Apply(projected, TransformContext.Default)).Where(r => r.Player == 1).ToList();
+        Assert.Equal([(1L, "2025-01", 2.0, false), (1L, "2025-02", 4.0, false), (1L, "2025-03", 6.0, true), (1L, "2025-04", 8.0, true)], soFar);
+
+        var squad = Rows(Transform.GroupBy(Aggregators.Sum).Apply(projected, TransformContext.Default));
+        Assert.Equal([false, false, true, true], squad.Select(r => r.Estimated));
+        Assert.All(Rows(Transform.ShareOf(Player).Apply(projected, TransformContext.Default)).Where(r => r.Month == "2025-03"), r => Assert.True(r.Estimated));
+        Assert.True(Rows(Transform.Rolling(TimeSpan.FromDays(62), Aggregators.Mean).Apply(projected, TransformContext.Default)).Last().Estimated);
+
+        Assert.Contains("Forecast at the grain", Assert.Throws<InvalidOperationException>(() =>
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing).Apply(projected, TransformContext.Default)).Message);
+    }
+
+    [Fact]
+    public void Forecasts_have_stable_identities_and_validate_their_inputs()
+    {
+        static string Id(ITransform t) => ((ICacheIdentity)t).CacheIdentity;
+        Assert.NotEqual(Id(Transform.Forecast(ForecastModel.Mean, ForecastHorizon.Buckets(3))), Id(Transform.Forecast(ForecastModel.Mean, ForecastHorizon.SeasonEnd)));
+        Assert.NotEqual(Id(Transform.Forecast(ForecastModel.HoltWinters(12), ForecastHorizon.Buckets(3))), Id(Transform.Forecast(ForecastModel.HoltWinters(), ForecastHorizon.Buckets(3))));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ForecastHorizon.Buckets(0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ForecastModel.SeasonalNaive(0));
+    }
+
+    private sealed class ToleranceComparer : IEqualityComparer<double>
+    {
+        public bool Equals(double x, double y) => Math.Abs(x - y) < 1e-9;
+        public int GetHashCode(double obj) => 0;
+    }
+}

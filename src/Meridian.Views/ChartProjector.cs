@@ -86,7 +86,8 @@ public sealed class ChartProjector : IChartProjector
                         break;
                 }
 
-                marks.Add(new MarkView(label, value, at, status, color));
+                marks.Add(new MarkView(label, value, at, status, color,
+                    Estimated: present && (block.Flags[i] & MeasureFlags.Estimated) != 0 ? true : null));
             }
 
             // Temporal marks are ordered by instant; sorting by formatted name would get months wrong.

@@ -192,6 +192,40 @@ far ÷ minutes so far.
 
 A comparison's view is cached, keyed to both periods' data versions.
 
+## Forecasting
+
+`Transform.Forecast(model, horizon)` projects each key's series of buckets forward — `ForecastHorizon.Buckets(6)`
+or `ForecastHorizon.SeasonEnd`. It needs regular buckets, so it comes after a resample, and it runs at the
+grain it forecasts: resampling a forecast is an error, since it would blend projected and observed values
+into one bucket.
+
+| Model | Projects | Needs |
+|---|---|---|
+| `Mean` | the average bucket so far — the pace | 1 bucket |
+| `Trend` | a least-squares line | 3 buckets |
+| `SeasonalNaive(m)` | the same bucket a season (m buckets) ago | 1 season |
+| `HoltWinters()` / `HoltWinters(m)` | smoothed level and trend (Holt), plus a seasonal pattern (additive Holt-Winters) | 4 buckets / 2 seasons |
+
+Holt-Winters picks its smoothing weights from a fixed grid by one-step-ahead error, so a forecast is a pure
+function of the data (and caches like any view). A key with too little history gets no forecast rather
+than a confident one. Future buckets are shared across keys — they follow the last bucket any key has — and
+each key projects from its own history, so a player whose data stopped a month earlier is projected one
+step further.
+
+**Projected is a flag, not a guess the reader has to make.** Every forecast point is
+`MeasureFlags.Estimated`, and so is anything computed from one: a group total, a rolling window, a running
+total, a share, a formula, a comparison. Views carry it as `MarkView.Estimated`, omitted for observed
+values. So "on pace for" — `Forecast(Mean, SeasonEnd)` then `Cumulative(Sum)` — is observed through today and
+marked projected after, and for goals per 90 the forecast runs on goals and minutes and the rate divides the
+projected totals.
+
+Two things to know:
+
+- **Zero-fill events before forecasting.** A month with no goal rows is 0 goals, but without zero-fill it's
+  a gap, and gaps are bridged on a straight line for fitting — a pace that ignores the blank months.
+- **These are point forecasts.** There are no prediction intervals yet (they're on the roadmap); a chart
+  should say "projected", not "will".
+
 ## Multi-series charts
 
 A `ChartSpec` is a list of `SeriesSpec`s, each an ordinary report plus a display name and a value axis
@@ -210,7 +244,7 @@ timeframe — rather than hard-coded ones. `RunDashboardAsync` runs every series
 
 Products that let users build dashboards store them as a `DashboardDefinition`: plain JSON with
 declarative transforms (`resample`, `rolling`, `groupBy`, `total`, `where`, `range`, `share`, `cumulative`,
-`top`, `bottom`), views (`kind`, `x`, `seriesBy`) and
+`top`, `bottom`, `forecast`), views (`kind`, `x`, `seriesBy`) and
 axes. `ToDashboard()` validates it and reports problems by JSON path (`charts[1].series[0].transforms[2].kind`),
 ready to show in an editor. Transforms that are code (a lambda `Filter`) can't be stored, by design.
 

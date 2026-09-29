@@ -45,6 +45,10 @@ var chart = await meridian.Engine.RunAsync(
   season on this season's axis) or turned into the change since then. Comparisons line up bucket for
   bucket — a weekly one steps back 52 weeks, so Mondays meet Mondays — and "so far this season" meets
   the same point last season.
+- **Projections that say they're projections.** Forecast any bucketed series — the pace so far, a trend,
+  last season's shape — to a number of buckets or the end of the season. "On pace for 14 goals" is a
+  forecast then a running total; every value built on a projection is marked, so charts can draw it
+  differently.
 - **Dashboards as data.** A dashboard is JSON a product can store and let users edit; charts share one
   context (players, timeframe), load together, and focusing on one player is served from cache.
 - **One definition, every surface.** The same metric catalog drives charts, a REST API and a typed agent
@@ -161,7 +165,7 @@ committed benchmark run, with history.
 
 In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: PostgreSQL / SQL Server /
 ClickHouse sources, qualifying thresholds for rates, round-aligned comparisons, a Redis cache backend and
-an MCP server. Later: forecasting and scenario modelling. See [ROADMAP.md](ROADMAP.md).
+an MCP server. Later: forecast ranges and scenario modelling. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

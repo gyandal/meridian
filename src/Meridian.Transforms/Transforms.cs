@@ -33,6 +33,16 @@ public static class Transform
     /// </summary>
     public static ITransform Cumulative(IAggregator aggregator) => new CumulativeTransform(aggregator);
 
+    /// <summary>
+    /// Projects each series forward with <paramref name="model"/>, over <paramref name="horizon"/>: the next six
+    /// months, or to the end of the season. Needs regular buckets — resample first. Projected points are flagged
+    /// estimated, as is anything computed from them (a running total, a squad total), and views mark them so a
+    /// chart can draw them differently. Follow a <see cref="ForecastModel.Mean"/> forecast with
+    /// <see cref="Cumulative"/> for "on pace for".
+    /// </summary>
+    public static ITransform Forecast(ForecastModel model, ForecastHorizon horizon) =>
+        new ForecastTransform(model ?? throw new ArgumentNullException(nameof(model)), horizon ?? throw new ArgumentNullException(nameof(horizon)));
+
     /// <summary>Rolling window over time, per key. Window is (t - <paramref name="window"/>, t].</summary>
     public static ITransform Rolling(TimeSpan window, IAggregator aggregator) =>
         new RollingTransform(window, aggregator);
@@ -122,6 +132,7 @@ internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by,
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
         var groups = new Dictionary<(PointKey Key, long At), List<double>>();
+        var estimated = new HashSet<(PointKey Key, long At)>();
         var order = new List<(PointKey Key, long At)>();
         for (int i = 0; i < input.Count; i++)
         {
@@ -132,7 +143,11 @@ internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by,
                 groups[group] = values;
                 order.Add(group);
             }
-            if ((input.Flags[i] & MeasureFlags.Missing) == 0) values.Add(input.Values[i]);
+            if ((input.Flags[i] & MeasureFlags.Missing) == 0)
+            {
+                values.Add(input.Values[i]);
+                if ((input.Flags[i] & MeasureFlags.Estimated) != 0) estimated.Add(group);
+            }
         }
 
         order.Sort(static (a, b) => a.Key.CompareTo(b.Key) is var byKey and not 0 ? byKey : a.At.CompareTo(b.At));
@@ -142,7 +157,7 @@ internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by,
             var values = groups[group];
             var measure = values.Count == 0
                 ? Measurement.Missing
-                : Measurement.Of(aggregator.Aggregate(CollectionsMarshal.AsSpan(values)));
+                : Measurement.Of(aggregator.Aggregate(CollectionsMarshal.AsSpan(values)), estimated.Contains(group));
             output.Add(group.Key, measure, group.At == PointBlock.NoAt ? null : new Instant(group.At));
         }
         return output.Build();
@@ -158,21 +173,24 @@ internal sealed class ShareTransform(DimensionId[] across) : IShareTransform, IC
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
         var totals = new Dictionary<(PointKey, long), double>();
+        var estimated = new HashSet<(PointKey, long)>();
         for (int i = 0; i < input.Count; i++)
         {
             if ((input.Flags[i] & MeasureFlags.Missing) != 0) continue;
             var whole = (Whole(input.Keys[i]), input.AtTicks[i]);
             totals[whole] = totals.GetValueOrDefault(whole) + input.Values[i];
+            if ((input.Flags[i] & MeasureFlags.Estimated) != 0) estimated.Add(whole);
         }
 
         var output = new PointBlock.Builder(new Unit("%"), input.Time);
         for (int i = 0; i < input.Count; i++)
         {
             long at = input.AtTicks[i];
-            var total = totals.GetValueOrDefault((Whole(input.Keys[i]), at));
+            var whole = (Whole(input.Keys[i]), at);
+            var total = totals.GetValueOrDefault(whole);
             var share = (input.Flags[i] & MeasureFlags.Missing) != 0 || total == 0
                 ? Measurement.Missing
-                : Measurement.Of(100 * input.Values[i] / total);
+                : Measurement.Of(100 * input.Values[i] / total, estimated.Contains(whole));
             output.Add(input.Keys[i], share, at == PointBlock.NoAt ? null : new Instant(at));
         }
         return output.Build();
@@ -446,12 +464,14 @@ internal sealed class CumulativeTransform(IAggregator aggregator) : IAggregating
             indices.Sort((a, b) => input.AtTicks[a] != input.AtTicks[b] ? input.AtTicks[a].CompareTo(input.AtTicks[b]) : a.CompareTo(b));
             seen.Clear();
             double running = 0;
+            bool estimated = false;
             foreach (int i in indices)
             {
                 if ((input.Flags[i] & MeasureFlags.Missing) == 0)
                 {
                     double v = input.Values[i];
                     seen.Add(v);
+                    estimated |= (input.Flags[i] & MeasureFlags.Estimated) != 0; // a total that includes a forecast is one
                     // The common aggregators run in constant time per point; any other re-aggregates the prefix.
                     running = aggregator.Name switch
                     {
@@ -465,7 +485,7 @@ internal sealed class CumulativeTransform(IAggregator aggregator) : IAggregating
                         _ => aggregator.Aggregate(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(seen)),
                     };
                 }
-                output.Add(key, seen.Count == 0 ? Measurement.Missing : Measurement.Of(running), new Instant(input.AtTicks[i]));
+                output.Add(key, seen.Count == 0 ? Measurement.Missing : Measurement.Of(running, estimated), new Instant(input.AtTicks[i]));
             }
         }
         return output.Build();
@@ -517,18 +537,20 @@ internal sealed class RollingTransform(TimeSpan window, IAggregator aggregator) 
                 while (input.AtTicks[indices[left]] <= lowerExclusive) left++;
 
                 window.Clear();
+                bool estimated = false;
                 for (int j = left; j <= p; j++)
                 {
                     int idx = indices[j];
                     if ((input.Flags[idx] & MeasureFlags.Missing) == 0)
                     {
                         window.Add(input.Values[idx]);
+                        estimated |= (input.Flags[idx] & MeasureFlags.Estimated) != 0;
                     }
                 }
 
                 var measure = window.Count == 0
                     ? Measurement.Missing
-                    : Measurement.Of(aggregator.Aggregate(CollectionsMarshal.AsSpan(window)));
+                    : Measurement.Of(aggregator.Aggregate(CollectionsMarshal.AsSpan(window)), estimated);
                 output.Add(key, measure, new Instant(t));
             }
         }
