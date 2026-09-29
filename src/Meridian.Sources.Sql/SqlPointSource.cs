@@ -146,8 +146,8 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
         {
             wallRange = ZoneSql.WallRange(time.Zone!, timeframe);
             exact = wallRange is null
-                ? $" AND {utc} >= {_sql.Parameter("utcStart")} AND {utc} < {_sql.Parameter("utcEnd")}"
-                : $" AND {ts} >= {_sql.Parameter("wallStart")} AND {ts} < {_sql.Parameter("wallEnd")}";
+                ? $" AND {utc} >= {_sql.TimeParameter("utcStart")} AND {utc} < {_sql.TimeParameter("utcEnd")}"
+                : $" AND {ts} >= {_sql.TimeParameter("wallStart")} AND {ts} < {_sql.TimeParameter("wallEnd")}";
         }
 
         // Buckets are local (docs/TIME.md): tagged with the grain, and with the zone that drew the boundaries.
@@ -324,7 +324,7 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
     private string Where(IReadOnlyList<EntityRef> entities, int metricCount)
     {
         var o = _options;
-        var sb = new StringBuilder($"WHERE {o.TimestampColumn} >= {_sql.Parameter("start")} AND {o.TimestampColumn} < {_sql.Parameter("end")}");
+        var sb = new StringBuilder($"WHERE {o.TimestampColumn} >= {_sql.TimeParameter("start")} AND {o.TimestampColumn} < {_sql.TimeParameter("end")}");
         if (metricCount > 0)
         {
             sb.Append($" AND {o.MetricColumn} ");
@@ -390,7 +390,7 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
         for (int i = 0; i < metrics.Count; i++) _sql.AddParameter(cmd, "m" + i, metrics[i].Id.Value);
         _sql.AddParameter(cmd, "start", start);
         _sql.AddParameter(cmd, "end", end);
-        if (sql.Contains(_sql.Parameter("utcStart"), StringComparison.Ordinal))
+        if (sql.Contains(_sql.TimeParameter("utcStart"), StringComparison.Ordinal))
         {
             _sql.AddParameter(cmd, "utcStart", timeframe.Start.UtcDateTime);
             _sql.AddParameter(cmd, "utcEnd", timeframe.End.UtcDateTime);

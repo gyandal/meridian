@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>$(SupportedTargetFrameworks)</TargetFrameworks>
+    <Description>Meridian IPointSource over PostgreSQL (and TimescaleDB): long or wide tables and views, with calendar bucketing and every built-in aggregator pushed down into SQL, exactly.</Description>
+    <PackageTags>$(PackageTags);postgresql;timescaledb</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Meridian.Sources.Sql/Meridian.Sources.Sql.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+  </ItemGroup>
+</Project>

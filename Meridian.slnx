@@ -18,6 +18,7 @@
     <Project Path="src/Meridian.Semantics/Meridian.Semantics.csproj" />
     <Project Path="src/Meridian.Sources.DuckDb/Meridian.Sources.DuckDb.csproj" />
     <Project Path="src/Meridian.Sources.MySql/Meridian.Sources.MySql.csproj" />
+    <Project Path="src/Meridian.Sources.PostgreSql/Meridian.Sources.PostgreSql.csproj" />
     <Project Path="src/Meridian.Sources.Sql/Meridian.Sources.Sql.csproj" />
     <Project Path="src/Meridian.Time/Meridian.Time.csproj" />
     <Project Path="src/Meridian.Transforms/Meridian.Transforms.csproj" />
@@ -30,6 +31,8 @@
     <Project Path="tests/Meridian.Engine.Tests/Meridian.Engine.Tests.csproj" />
     <Project Path="tests/Meridian.Hosts.Tests/Meridian.Hosts.Tests.csproj" />
     <Project Path="tests/Meridian.Sources.DuckDb.Tests/Meridian.Sources.DuckDb.Tests.csproj" />
+    <Project Path="tests/Meridian.Sources.Sql.Tests/Meridian.Sources.Sql.Tests.csproj" />
+    <Project Path="tests/Meridian.Sources.TestData/Meridian.Sources.TestData.csproj" />
     <Project Path="tests/Meridian.Time.Tests/Meridian.Time.Tests.csproj" />
     <Project Path="tests/Meridian.Transforms.Tests/Meridian.Transforms.Tests.csproj" />
     <Project Path="tests/Meridian.Views.Tests/Meridian.Views.Tests.csproj" />

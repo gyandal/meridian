@@ -8,7 +8,7 @@ This package is one part of Meridian. Most applications start with:
 
 ```bash
 dotnet add package Meridian.Engine --prerelease
-dotnet add package Meridian.Sources.DuckDb --prerelease   # or Meridian.Sources.MySql, or your own IPointSource
+dotnet add package Meridian.Sources.DuckDb --prerelease   # or .PostgreSql, .MySql, or your own IPointSource
 dotnet add package Meridian.Views.Json --prerelease
 ```
 

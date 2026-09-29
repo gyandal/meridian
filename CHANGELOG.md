@@ -5,6 +5,20 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
 ## [Unreleased]
 
+### Added
+- **PostgreSQL source** (`Meridian.Sources.PostgreSql`): `PostgreSqlPointSource` over a connection string or an
+  existing `NpgsqlDataSource`, with long and wide layouts, dimensions, batching, and every built-in aggregator
+  and bucket pushed down (sub-daily buckets need PostgreSQL 14+). Sessions run in UTC, so `timestamptz` and
+  `timestamp` columns read alike whatever the server's time zone.
+- A parity suite for database sources (`tests/Meridian.Sources.Sql.Tests`): the DuckDB test data in a real
+  database (Testcontainers), 1,261 cases comparing pushdown with the engine and with DuckDB. Skipped where
+  Docker isn't available.
+
+### Fixed
+- DuckDB compared a `DATE` column with a timeframe edge as that edge's date, so a timeframe starting at 07:30 on
+  1 January included 1 January (and one ending at 12:00 on 3 January left it out). Dates now compare as their
+  midnight, as in the engine and PostgreSQL. Only timeframes with mid-day edges over `DATE` columns change.
+
 ## [0.1.0-preview.5] — 2026-09-29
 
 ### Added
