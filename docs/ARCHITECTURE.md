@@ -94,6 +94,32 @@ Attributes rarely sit on the fact row: the venue belongs to the match, a player'
 Meridian doesn't model joins; make the source's relation a view that joins them onto each row — for
 time-varying attributes, the value *as of the row's date* — and map the resulting columns.
 
+## Aggregators and rankings
+
+`Aggregators` has sum, mean, min, max, count, median, first, last, `StdDev` and `Variance` (sample, n − 1)
+and `Percentile(p)` (linear interpolation, as `PERCENTILE.INC` / `quantile_cont`), resolvable by name —
+`p90`, `p99.5` — from APIs and dashboard definitions. Every one is pushed down to DuckDB, and the parity
+suite checks each against the in-engine result across zones, periods and gap policies. An aggregate with no
+value — the spread of a single reading — is a gap, as SQL's NULL is; NaN is never a value anywhere.
+
+Two things are deliberately not aggregators:
+
+- **Distinct count.** Counting distinct *values* of a measure is rarely meaningful; what's usually meant is
+  distinct *things* — players who scored this month — and that's a group then a count:
+  `Resample(Month, Sum)`, then `GroupBy(Count)` counts the players with a value in each month.
+- **Weighted mean.** Σ(value × weight) ÷ Σweight needs each row's product, like any product of metrics;
+  put the product in the source and define a ratio of it to the weight.
+
+`Transform.Top(n, rankBy)` and `Bottom(n, rankBy)` keep the n keys with the highest or lowest score, and all
+of their points: after `Total(Sum, player)` that's the top scorers as bars; on monthly points it picks the
+players whose months sum highest and keeps each of their months, for a line chart of the top five. `per`
+ranks within groups (the top three at each venue). Exactly n are kept — ties go to the lower key — and keys
+with no score aren't ranked. A ranking reads values, so for a derived metric it must come after the last
+aggregation; before it, each input would be ranked on its own.
+
+Ranking a rate has a trap Meridian doesn't yet guard: a ten-minute cameo with a goal is 9 goals per 90.
+Qualifying thresholds on a ratio's denominator are on the roadmap.
+
 ## Derived metrics
 
 A derived metric is defined once in the catalog from stored ones — goals per 90 is
@@ -104,8 +130,8 @@ used in any report like a stored metric. The rules that make it right:
   aggregating step of the report — resample, rolling window, `GroupBy`, `Total` — and the division happens
   after the last of them. "Goals per 90 by venue per month" divides monthly goal totals per venue by monthly
   minutes per venue; it never averages per-match ratios (where a one-goal, ten-minute cameo would swamp a
-  season). Transforms after the last aggregation apply to the ratio. A value filter before then is an
-  error — it would filter goals and minutes each by their own values.
+  season). Transforms after the last aggregation apply to the ratio. A value filter or ranking before
+  then is an error — it would filter or rank goals and minutes each by their own values.
 - **No rows is zero, no denominator is no value.** Goals are events, so a bucket with minutes but no goal
   rows is 0 goals per 90. A bucket with no (or zero) minutes has no value, even with a zero-fill gap policy.
 - **Inputs are ordinary fetches.** Each input goes through the cache, pushdown and batching like any
@@ -183,7 +209,8 @@ timeframe — rather than hard-coded ones. `RunDashboardAsync` runs every series
 `context.Focus(player)`, and because data is cached per entity it needs no new queries.
 
 Products that let users build dashboards store them as a `DashboardDefinition`: plain JSON with
-declarative transforms (`resample`, `rolling`, `groupBy`, `total`, `where`, `range`, `share`), views (`kind`, `x`, `seriesBy`) and
+declarative transforms (`resample`, `rolling`, `groupBy`, `total`, `where`, `range`, `share`, `cumulative`,
+`top`, `bottom`), views (`kind`, `x`, `seriesBy`) and
 axes. `ToDashboard()` validates it and reports problems by JSON path (`charts[1].series[0].transforms[2].kind`),
 ready to show in an editor. Transforms that are code (a lambda `Filter`) can't be stored, by design.
 

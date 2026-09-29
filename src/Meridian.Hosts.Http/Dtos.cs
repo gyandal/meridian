@@ -15,7 +15,7 @@ public sealed record ReportRequest(
     int PastDays,
     string Transform,       // raw | resample | rolling7 | rolling28   (used when GroupBy = time)
     string Period,          // day | week | month | season
-    string Aggregator,      // mean | sum | min | max | median | last | count
+    string Aggregator,      // any Aggregators name: mean, sum, min, max, count, median, first, last, stddev, variance, p90…
     string Gap,             // leave-missing | zero-fill | carry-forward | interpolate
     string ChartKind,       // line | column | area
     bool SeriesByEntity,

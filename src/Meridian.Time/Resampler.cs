@@ -98,7 +98,7 @@ public static class Resampler
                 {
                     if (values.Count == 0) continue;
                     double v = aggregator.Aggregate(CollectionsMarshal.AsSpan(values));
-                    output.Add(key, Measurement.Of(v), new Instant(start));
+                    if (!double.IsNaN(v)) output.Add(key, Measurement.Of(v), new Instant(start)); // no spread of one value: a gap
                 }
                 continue;
             }
@@ -128,7 +128,9 @@ public static class Resampler
         {
             if (values.Count > 0)
             {
-                aggregated[start] = aggregator.Aggregate(CollectionsMarshal.AsSpan(values));
+                // An aggregate with no value (the spread of one reading) is a gap, filled like any other.
+                double v = aggregator.Aggregate(CollectionsMarshal.AsSpan(values));
+                if (!double.IsNaN(v)) aggregated[start] = v;
             }
         }
 

@@ -93,7 +93,7 @@ What it says, plainly:
 
 When a report starts with a resample the source can compute exactly
 (`IRollupPointSource`; DuckDB covers sub-daily, day, week from any start day and month buckets, in any IANA
-zone, for UTC, wall-clock-in-a-zone or date columns, with mean, sum, min, max, count, median or last), the engine asks for one point per
+zone, for UTC, wall-clock-in-a-zone or date columns, with mean, sum, min, max, count, median, first, last, standard deviation, variance or any percentile), the engine asks for one point per
 entity-bucket instead of every raw row. Zone conversions in the SQL are generated from NodaTime's rules,
 so they can't disagree with the engine. Anything else — seasons, custom aggregators — falls back to a raw
 fetch, so results never change; parity tests check every period × aggregator × gap policy in several

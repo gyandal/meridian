@@ -160,9 +160,8 @@ committed benchmark run, with history.
 ## Roadmap
 
 In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: PostgreSQL / SQL Server /
-ClickHouse sources, year-on-year and season-aligned comparisons, more aggregators
-(percentiles, standard deviation), a Redis cache backend and an MCP server. Later: forecasting and
-scenario modelling. See [ROADMAP.md](ROADMAP.md).
+ClickHouse sources, qualifying thresholds for rates, round-aligned comparisons, a Redis cache backend and
+an MCP server. Later: forecasting and scenario modelling. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

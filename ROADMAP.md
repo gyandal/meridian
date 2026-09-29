@@ -17,7 +17,8 @@ cases are welcome as issues.
   (shared context, focus on one entity, stored as JSON definitions), declarative filters (by key and by
   value), sums and differences of metrics, shares of a total, comparisons with an earlier period
   (year-on-year, season-on-season, the same week last year; overlay, difference or % change) and running
-  totals
+  totals, and aggregators beyond the basics (first, standard deviation, variance, any percentile — all
+  pushed down) with top / bottom N rankings
 - Sources: DuckDB (tables and Parquet in place, long or wide layout), MySQL
 - Hosts: REST API with a dashboard, an agent (MCP-style) tool surface
 - Benchmarks: synthetic to 1B rows, NYC taxi, TSBS ([BENCHMARKS.md](docs/BENCHMARKS.md))
@@ -30,8 +31,9 @@ cases are welcome as issues.
   (minutes, or a derived metric): goals alone only have rows for matches with a goal, so numbering them
   would count scoring matches.
 - **Index to a baseline** — each value as a percentage of its value at the start of the timeframe.
-- **More aggregators** — percentiles and quartiles, standard deviation and variance, distinct count,
-  weighted mean.
+- **Qualifying thresholds for rates** — "top 5 by goals per 90, minimum 450 minutes". Without one, a
+  ten-minute cameo with a goal (9 per 90) tops any ranking of a rate; the threshold belongs on the
+  denominator's total, which a filter on the rate can't see.
 - **Redis cache backend** — `IPointCacheStore` over Redis, passing the shared conformance suite.
 - **MCP server** — bind the transport-agnostic agent tools to the Model Context Protocol.
 

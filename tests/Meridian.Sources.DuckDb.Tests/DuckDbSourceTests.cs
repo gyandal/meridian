@@ -151,6 +151,18 @@ public sealed class DuckDbFixture : IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    public IReadOnlyList<T> Rows<T>(string sql, Func<System.Data.IDataRecord, T> read)
+    {
+        using var conn = new DuckDBConnection(ConnectionString);
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        using var reader = cmd.ExecuteReader();
+        var rows = new List<T>();
+        while (reader.Read()) rows.Add(read(reader));
+        return rows;
+    }
+
     public long Scalar(string sql)
     {
         using var conn = new DuckDBConnection(ConnectionString);
@@ -218,7 +230,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         var data = new TheoryData<string, string, string, GapPolicy>();
         foreach (var zone in Zones)
         foreach (var period in new[] { "15m", "hour", "day", "week", "month" })
-        foreach (var agg in new[] { "mean", "sum", "min", "max", "count", "median", "last" })
+        foreach (var agg in new[] { "mean", "sum", "min", "max", "count", "median", "last", "first", "stddev", "variance", "p90" })
         foreach (var gap in Enum.GetValues<GapPolicy>())
         {
             data.Add(zone, period, agg, gap);
@@ -335,7 +347,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         foreach (var ambiguous in new[] { AmbiguousTime.Earlier, AmbiguousTime.Later })
         foreach (var zone in new[] { "UTC", "America/New_York", "Europe/London" })
         foreach (var period in new[] { "15m", "hour", "day", "week", "month" })
-        foreach (var agg in new[] { "mean", "sum", "min", "max", "count", "median", "last" })
+        foreach (var agg in new[] { "mean", "sum", "min", "max", "count", "median", "last", "first", "stddev", "variance", "p90" })
         {
             data.Add(ambiguous, zone, period, agg);
         }
@@ -504,7 +516,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         var data = new TheoryData<string, string, string>();
         foreach (var zone in new[] { "UTC", "Europe/London" })
         foreach (var period in new[] { "raw", "hour", "day", "week", "month" })
-        foreach (var agg in new[] { "mean", "sum", "min", "max", "count", "median", "last" })
+        foreach (var agg in new[] { "mean", "sum", "min", "max", "count", "median", "last", "first", "stddev", "variance", "p90" })
         {
             if (period == "raw" && agg != "mean") continue; // raw rows have no aggregator
             data.Add(zone, period, agg);
@@ -1125,6 +1137,77 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.Equal(SeasonSum("goals", Between(new(2023, 7, 1), new(2024, 7, 1))), series[1].Marks[^1].Value!.Value);
     }
 
+    // ---------------------------------------------------------------------------------- rankings
+
+    private IReadOnlyList<(long Athlete, double Value)> SqlRanking(string sql) => db.Rows(sql, r => (Convert.ToInt64(r.GetValue(0)), r.GetDouble(1)));
+
+    [Fact]
+    public async Task The_top_scorers_by_goals_per_90_match_sql()
+    {
+        var report = SeasonReport(GoalsPer90.Id, Season2425, new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete)),
+            Transform.Total(Aggregators.Sum, Athlete), Transform.Top(2, Aggregators.Sum));
+        var view = await MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        var expected = SqlRanking("""
+            SELECT entity_id, 90 * coalesce(sum(value) FILTER (WHERE metric = 'goals'), 0) / sum(value) FILTER (WHERE metric = 'minutes') AS per90
+            FROM seasons WHERE ts >= TIMESTAMP '2024-07-01' AND ts < TIMESTAMP '2025-07-01'
+            GROUP BY entity_id ORDER BY per90 DESC, entity_id LIMIT 2
+            """);
+        Assert.Equal(expected.Select(e => e.Athlete.ToString()).Order(), view.Series[0].Marks.Select(m => m.Label).Order());
+        foreach (var (athlete, value) in expected)
+        {
+            Assert.Equal(value, view.Series[0].Marks.Single(m => m.Label == athlete.ToString()).Value!.Value, 9);
+        }
+    }
+
+    [Fact]
+    public async Task The_top_two_as_lines_keep_every_month_and_ranking_before_a_ratio_is_refused()
+    {
+        var report = SeasonReport(AppGoals.Id, Season2425, new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill), Transform.Top(2, Aggregators.Sum));
+        var engine = MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine;
+        var view = await engine.RunAsync(report, ProjectionOptions.Default);
+
+        var top = SqlRanking("""
+            SELECT entity_id, sum(value) AS goals FROM seasons
+            WHERE metric = 'goals' AND ts >= TIMESTAMP '2024-07-01' AND ts < TIMESTAMP '2025-07-01'
+            GROUP BY entity_id ORDER BY goals DESC, entity_id LIMIT 2
+            """);
+        Assert.Equal(top.Select(t => $"athlete {t.Athlete}").Order(), view.Series.Select(s => s.Name).Order());
+        Assert.All(view.Series, s => Assert.Equal(12, s.Marks.Count));
+        Assert.All(top, t => Assert.Equal(t.Value, view.Series.Single(s => s.Name == $"athlete {t.Athlete}").Marks.Sum(m => m.Value!.Value)));
+
+        // Ranking each input of a ratio separately (top two by goals, and top two by minutes) isn't a ranking of the ratio.
+        var early = SeasonReport(GoalsPer90.Id, Season2425, new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete)),
+            Transform.Top(2, Aggregators.Sum), Transform.Total(Aggregators.Sum, Athlete));
+        var error = await Assert.ThrowsAsync<ArgumentException>(() => engine.RunAsync(early, ProjectionOptions.Default));
+        Assert.Contains("ranking", error.Message);
+    }
+
+    [Fact]
+    public async Task Spread_and_percentiles_push_down_and_match_sql_month_by_month()
+    {
+        foreach (var (aggregator, sql) in new[] { (Aggregators.StdDev, "stddev_samp(value)"), (Aggregators.Percentile(90), "quantile_cont(value, 0.9)") })
+        {
+            var report = PipelineSpec.Create("club", AppMinutes.Id, [new EntityRef(Athlete, 1)], Season2425,
+                new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Venue),
+                Transform.Resample(Period.Month, aggregator, GapPolicy.LeaveMissing)).WithDimensions(Venue);
+            var counting = new CountingSource(SeasonsSource());
+            var view = await MeridianRuntime.InMemory(AppCatalog, counting).Engine.RunAsync(report, ProjectionOptions.Default);
+            Assert.Equal(1, counting.Rollups + counting.Batches.Count);
+
+            // Months with one home match have no spread: no mark, where SQL gives NULL.
+            var expected = db.Rows($"""
+                SELECT strftime(date_trunc('month', ts), '%Y-%m'), {sql} FROM seasons
+                WHERE metric = 'minutes' AND entity_id = 1 AND venue = 'Home' AND ts >= TIMESTAMP '2024-07-01' AND ts < TIMESTAMP '2025-07-01'
+                GROUP BY 1 HAVING {sql} IS NOT NULL ORDER BY 1
+                """, r => (Month: r.GetString(0), Value: r.GetDouble(1)));
+            var home = view.Series.Single(s => s.Name == "Home").Marks;
+            Assert.Equal(expected.Select(e => e.Month), home.Select(m => m.Label));
+            for (int i = 0; i < expected.Count; i++) Assert.Equal(expected[i].Value, home[i].Value!.Value, 9);
+        }
+    }
+
     private static PipelineSpec Monthly(MetricDefinition metric, ChartKind kind, params long[] athletes) => PipelineSpec.Create(
         "club", metric.Id, [.. (athletes.Length == 0 ? [1L] : athletes).Select(a => new EntityRef(Athlete, a))], FirstHalf,
         new ViewSpec(kind, AxisSource.Time, SeriesBy: athletes.Length > 1 ? Athlete : null),
@@ -1260,6 +1343,8 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","compare":{"unit":"season","back":0}}]}]}""", "charts[0].series[0].compare.back")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","compare":{"unit":"season","show":"ratio"}}]}]}""", "charts[0].series[0].compare.show")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"cumulative"}]}]}]}""", "charts[0].series[0].transforms[0].aggregator")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"top","aggregator":"sum"}]}]}]}""", "charts[0].series[0].transforms[0].n")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"bottom","n":3,"aggregator":"p101"}]}]}]}""", "charts[0].series[0].transforms[0].aggregator")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","view":{"kind":"donut"}}]}]}""", "charts[0].series[0].view.kind")]
     public void A_bad_definition_says_exactly_where_the_problem_is(string json, string path)
     {

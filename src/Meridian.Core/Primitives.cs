@@ -25,7 +25,9 @@ public readonly record struct Measurement(double Value, MeasureFlags Flags)
 
     public bool IsPresent => (Flags & MeasureFlags.Missing) == 0;
 
-    public static Measurement Of(double value) => new(value, MeasureFlags.None);
+    /// <summary>A present value — or <see cref="Missing"/> for NaN, which is never a value (the spread of a single
+    /// reading, a percentage of zero): charts and JSON have no NaN, and SQL gives NULL for the same cases.</summary>
+    public static Measurement Of(double value) => double.IsNaN(value) ? Missing : new(value, MeasureFlags.None);
 
     public static implicit operator Measurement(double value) => Of(value);
 

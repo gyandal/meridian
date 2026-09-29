@@ -25,7 +25,7 @@ app.MapGet("/api/catalog", () => Results.Json(new
     entities = Seed.Players.Select(p => new { id = p, name = $"Player {p}" }),
     transforms = new[] { "raw", "resample", "rolling7", "rolling28" },
     periods = new[] { "day", "week", "month", "season" },
-    aggregators = new[] { "mean", "sum", "min", "max", "median", "last", "count" },
+    aggregators = Aggregators.Names,
     gaps = new[] { "leave-missing", "zero-fill", "carry-forward", "interpolate" },
     chartKinds = new[] { "line", "column", "area" },
     timeZones = new[] { "UTC", "Europe/London", "America/New_York", "Australia/Sydney", "Asia/Tokyo" },
