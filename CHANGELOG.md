@@ -20,6 +20,15 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
   dimensions (each player's share of goals; the home/away split per month). The axis unit becomes `%`.
   A share of a ratio metric is an error. Dashboard definitions gain a `share` transform (`by`).
 - Demo: assists, goal involvements, and a share-of-involvements chart on the example dashboard.
+- **Comparisons with an earlier period**: `spec.Earlier(Baseline.SeasonsBack(1))` is last season drawn on
+  this season's axis (overlay it with `ChartSpec`); `spec.ChangeFrom(baseline, Difference | PercentChange)`
+  is the change per key and bucket. Baselines step back in days, weeks, months, years or seasons (through
+  the season calendar); a step that wouldn't land on the report's own buckets — a year back on weekly
+  buckets — is an error that says what to use (`WeeksBack(52)`). Both periods cache and push down.
+  Dashboard series gain `"compare": { "unit", "back", "show" }`.
+- **Running totals**: `Transform.Cumulative(aggregator)` — goals so far — per key in time order; for a
+  derived metric, goals so far ÷ minutes so far. Dashboard definitions gain a `cumulative` transform.
+- Demo: "goals so far, the last 12 months against the 12 before" on the example dashboard.
 
 ### Changed
 - A report that filters or groups by a dimension it doesn't keep is now an error that says to declare it

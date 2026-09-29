@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using Meridian.Caching;
 using Meridian.Core;
 using Meridian.Semantics;
+using Meridian.Time;
 using Meridian.Transforms;
 using Meridian.Views;
 
@@ -54,7 +55,16 @@ public sealed class ReportEngine(
     /// <summary>A report: its inputs, how they combine (null for a stored metric), and transforms that run
     /// on the combined series.</summary>
     private sealed record Request(PipelineSpec Spec, MetricDefinition Metric, IReadOnlyList<Plan> Inputs,
-        MetricFormula? Formula, ImmutableArray<ITransform> After);
+        MetricFormula? Formula, ImmutableArray<ITransform> After)
+    {
+        /// <summary>For a comparison: the same report over the baseline's timeframe, and how to line it up.</summary>
+        public Request? Baseline { get; init; }
+
+        public CalendarShift Shift { get; init; }
+
+        /// <summary>Everything to load: this report's inputs (none when only the baseline is shown) and the baseline's.</summary>
+        public IEnumerable<Plan> AllInputs => Baseline is null ? Inputs : Inputs.Concat(Baseline.Inputs);
+    }
 
     public async Task<ChartView> RunAsync(PipelineSpec spec, ProjectionOptions options, CancellationToken ct = default) =>
         (await RunManyAsync([spec], options, ct).ConfigureAwait(false))[0];
@@ -77,14 +87,14 @@ public sealed class ReportEngine(
             .Where(i => viewKeys[i] is not { } key || !views!.TryGet(key, options, out result[i]))
             .ToList();
 
-        var raws = await LoadAsync([.. pending.SelectMany(i => requests[i].Inputs)], ct).ConfigureAwait(false);
+        var raws = await LoadAsync([.. pending.SelectMany(i => requests[i].AllInputs)], ct).ConfigureAwait(false);
         foreach (var i in pending)
         {
             var request = requests[i];
             var view = projector.Project(Compute(request, raws, options), ResolvedView(request), options);
             if (viewKeys[i] is { } key)
             {
-                views!.Set(key, options, view, request.Inputs.SelectMany(p =>
+                views!.Set(key, options, view, request.AllInputs.SelectMany(p =>
                     p.Spec.Entities.Select(e => ViewCache.Tag(p.Spec.Tenant, p.Metric.Id.Value, e))));
             }
             result[i] = view;
@@ -137,6 +147,23 @@ public sealed class ReportEngine(
     private Request Prepare(PipelineSpec spec, ProjectionOptions options)
     {
         ArgumentNullException.ThrowIfNull(spec);
+        if (spec.Comparison is { } comparison)
+        {
+            var shift = comparison.Baseline.Resolve(spec.Timeframe, options.Calendar);
+            if (shift.Mismatch(Grain(spec.Transforms), comparison.Baseline.Unit) is { } problem)
+            {
+                throw new ArgumentException($"This report can't be compared {comparison.Baseline}: {problem}", nameof(spec));
+            }
+            var current = Prepare(spec with { Comparison = null }, options);
+            var baseline = Prepare(spec with { Comparison = null, Timeframe = shift.Back(spec.Timeframe, options.Calendar) }, options);
+            return current with
+            {
+                Spec = spec,
+                Inputs = comparison.Output == ComparisonOutput.Baseline ? [] : current.Inputs,
+                Baseline = baseline,
+                Shift = shift,
+            };
+        }
         if (spec.Entities.Count == 0)
         {
             throw new ArgumentException("A report needs at least one entity.", nameof(spec));
@@ -197,6 +224,19 @@ public sealed class ReportEngine(
             return PlanFor(inputSpec, input, options);
         }).ToList();
         return new Request(spec, metric, inputs, formula, after);
+    }
+
+    /// <summary>The period name of a report's time buckets, or null when it has none: raw points, or time
+    /// totalled away. Only the last resample counts; a rolling window or running total keeps its buckets.</summary>
+    private static string? Grain(ImmutableArray<ITransform> transforms)
+    {
+        string? grain = null;
+        foreach (var transform in transforms)
+        {
+            if (transform is ResampleTransform resample) grain = resample.Period.Name;
+            else if (transform is ITimeCollapsing { CollapsesTime: true }) grain = null;
+        }
+        return grain;
     }
 
     private static void ValidateDimensions(PipelineSpec spec, MetricDefinition metric)
@@ -331,6 +371,15 @@ public sealed class ReportEngine(
 
     private static PointBlock Compute(Request request, Dictionary<string, PointBlock> raws, ProjectionOptions options)
     {
+        if (request.Baseline is { } baselineRequest)
+        {
+            var baseline = Shifted(Compute(baselineRequest, raws, options), request.Shift, options.Calendar);
+            var output = request.Spec.Comparison!.Output;
+            return output == ComparisonOutput.Baseline
+                ? baseline
+                : Change(Compute(request with { Baseline = null }, raws, options), baseline, output);
+        }
+
         var context = new TransformContext(options.Calendar);
         var blocks = request.Inputs.Select(p => Apply(p.Transforms, KeepOnly(raws[p.LoadKey], p.Keep), context)).ToList();
         var combined = request.Formula switch
@@ -374,6 +423,41 @@ public sealed class ReportEngine(
             output.Add(denominator.Keys[i], Measurement.Of(n / d * scale), at == PointBlock.NoAt ? null : new Instant(at));
         }
         return output.Build();
+    }
+
+    /// <summary>A baseline moved forward onto the report's time axis: last March's bucket becomes this March's.</summary>
+    private static PointBlock Shifted(PointBlock baseline, CalendarShift shift, CalendarContext calendar)
+    {
+        var output = PointBlock.Builder.Like(baseline);
+        for (int i = 0; i < baseline.Count; i++)
+        {
+            long at = shift.Forward(baseline.AtTicks[i], baseline.Time, calendar);
+            output.Add(baseline.Keys[i], baseline.Row(i).Measure, at == PointBlock.NoAt ? null : new Instant(at));
+        }
+        return output.Build();
+    }
+
+    /// <summary>current against the aligned baseline, for each (key, time) both have a value for.</summary>
+    private static PointBlock Change(PointBlock current, PointBlock baseline, ComparisonOutput output)
+    {
+        var before = new Dictionary<(PointKey, long), double>();
+        for (int i = 0; i < baseline.Count; i++)
+        {
+            if ((baseline.Flags[i] & MeasureFlags.Missing) == 0) before[(baseline.Keys[i], baseline.AtTicks[i])] = baseline.Values[i];
+        }
+
+        var result = new PointBlock.Builder(output == ComparisonOutput.PercentChange ? new Unit("%") : current.Unit, current.Time);
+        for (int i = 0; i < current.Count; i++)
+        {
+            if ((current.Flags[i] & MeasureFlags.Missing) != 0) continue;
+            long at = current.AtTicks[i];
+            if (!before.TryGetValue((current.Keys[i], at), out double b)) continue;
+            if (output == ComparisonOutput.PercentChange && b == 0) continue;
+            double c = current.Values[i];
+            double value = output == ComparisonOutput.PercentChange ? (c - b) / b * 100 : c - b;
+            result.Add(current.Keys[i], Measurement.Of(value), at == PointBlock.NoAt ? null : new Instant(at));
+        }
+        return result.Build();
     }
 
     /// <summary>
@@ -439,8 +523,8 @@ public sealed class ReportEngine(
     {
         if (views is null) return null;
 
-        var parts = new List<object?> { request.Metric.Id, request.Metric.Formula?.ToString() };
-        foreach (var plan in request.Inputs)
+        var parts = new List<object?> { request.Metric.Id, request.Metric.Formula?.ToString(), request.Spec.Comparison?.ToString() };
+        foreach (var plan in request.AllInputs)
         {
             var s = plan.Scope;
             parts.Add(string.Join('|',
@@ -476,7 +560,12 @@ public sealed class ReportEngine(
     private static ViewSpec ResolvedView(Request request) =>
         // Default the value unit from the catalog if the view didn't pin one — or % once a share is taken.
         request.Spec.View.ValueUnit is not null ? request.Spec.View
-            : request.Spec.View with { ValueUnit = request.Spec.Transforms.Any(t => t is IShareTransform) ? new Unit("%") : request.Metric.Unit };
+            : request.Spec.View with
+            {
+                ValueUnit = request.Spec.Comparison?.Output == ComparisonOutput.PercentChange || request.Spec.Transforms.Any(t => t is IShareTransform)
+                    ? new Unit("%")
+                    : request.Metric.Unit,
+            };
 
     private static PointBlock CheckTimeKind(MetricDefinition metric, PointBlock block)
     {

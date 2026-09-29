@@ -89,6 +89,20 @@ public sealed class DuckDbFixture : IDisposable
             UNION ALL
             SELECT entity_id, 'assists', ts, assists, venue FROM m WHERE assists > 0;
 
+            -- Two seasons of weekly matches (July 2023 to June 2025), for comparisons with an earlier period.
+            CREATE TABLE seasons AS
+            WITH m AS (
+                SELECT e.entity_id, TIMESTAMP '2023-07-05 15:00:00' + to_days(g.g * 7) AS ts,
+                       CASE WHEN hash(e.entity_id * 19 + g.g) % 2 = 0 THEN 'Home' ELSE 'Away' END AS venue,
+                       CAST(20 + hash(e.entity_id * 23 + g.g) % 71 AS DOUBLE) AS minutes,
+                       CAST(hash(e.entity_id * 41 + g.g) % 3 AS DOUBLE) AS goals
+                FROM range(1, 4) AS e(entity_id), range(0, 104) AS g(g)
+                WHERE hash(e.entity_id * 43 + g.g) % 6 <> 0
+            )
+            SELECT entity_id, 'minutes' AS metric, ts, minutes AS value, venue FROM m
+            UNION ALL
+            SELECT entity_id, 'goals', ts, goals, venue FROM m WHERE goals > 0;
+
             CREATE TABLE typed (entity_id INTEGER, metric VARCHAR, ts TIMESTAMP, value DECIMAL(10, 2));
             INSERT INTO typed VALUES (1, 'typed', TIMESTAMP '2025-02-01 10:00', 12.50), (1, 'typed', TIMESTAMP '2025-02-02 10:00', 7.25);
 
@@ -924,6 +938,193 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.Equal(Involvements.Formula, MetricDefinition.Sum(Involvements.Id, "x", Unit.None, [AppGoals.Id, AppAssists.Id], [Athlete]).Formula);
     }
 
+    // ---------------------------------------------------------------------------------- comparisons
+
+    private static readonly DateInterval Season2425 = new(Instant.FromUtc(new DateTime(2024, 7, 1)), Instant.FromUtc(new DateTime(2025, 7, 1)));
+
+    private DuckDbPointSource SeasonsSource() =>
+        new(new DuckDbSourceOptions(db.ConnectionString, Relation: "seasons", DimensionColumns: new Dictionary<string, string> { ["venue"] = "venue" }), Athlete);
+
+    private static PipelineSpec SeasonReport(MetricId metric, DateInterval timeframe, ViewSpec view, params ITransform[] transforms) => PipelineSpec.Create(
+        "club", metric, [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2), new EntityRef(Athlete, 3)], timeframe, view, transforms);
+
+    private long SeasonSum(string metric, string where) =>
+        db.Scalar($"SELECT CAST(coalesce(sum(value), 0) AS BIGINT) FROM seasons WHERE metric = '{metric}' AND {where}");
+
+    private static string Between(DateTime from, DateTime to) => $"ts >= TIMESTAMP '{from:yyyy-MM-dd}' AND ts < TIMESTAMP '{to:yyyy-MM-dd}'";
+
+    [Fact]
+    public async Task Last_season_is_drawn_on_this_seasons_axis_and_pushes_down()
+    {
+        var thisSeason = SeasonReport(AppGoals.Id, Season2425, new ViewSpec(ChartKind.Line, AxisSource.Time),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing), Transform.GroupBy(Aggregators.Sum));
+        var lastSeason = thisSeason.Earlier(Baseline.SeasonsBack(1));
+
+        var counting = new CountingSource(SeasonsSource());
+        var viaSql = await MeridianRuntime.InMemory(AppCatalog, counting).Engine.RunAsync(lastSeason, ProjectionOptions.Default);
+        var inEngine = await MeridianRuntime.InMemory(AppCatalog, new RawOnly(SeasonsSource())).Engine.RunAsync(lastSeason, ProjectionOptions.Default);
+
+        Assert.Equal(1, counting.Rollups + counting.Batches.Count); // only the baseline is fetched, bucketed in SQL
+        Assert.Equal(0, counting.Raws);
+        AssertSameView(inEngine, viaSql);
+
+        var marks = viaSql.Series[0].Marks;
+        Assert.Equal(12, marks.Count);
+        Assert.Equal("2024-09", marks[2].Label); // labelled as this season's months…
+        Assert.Equal(SeasonSum("goals", Between(new(2023, 9, 1), new(2023, 10, 1))), marks[2].Value!.Value); // …holding last season's
+    }
+
+    [Fact]
+    public async Task Percent_change_per_player_matches_sql()
+    {
+        var report = SeasonReport(AppGoals.Id, Season2425, new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete)),
+            Transform.Total(Aggregators.Sum, Athlete)).ChangeFrom(Baseline.SeasonsBack(1));
+        var view = await MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        Assert.Equal("%", view.Axes[1].Unit);
+        foreach (var mark in view.Series[0].Marks)
+        {
+            double now = SeasonSum("goals", $"entity_id = {mark.Label} AND {Between(new(2024, 7, 1), new(2025, 7, 1))}");
+            double then = SeasonSum("goals", $"entity_id = {mark.Label} AND {Between(new(2023, 7, 1), new(2024, 7, 1))}");
+            Assert.Equal((now - then) / then * 100, mark.Value!.Value, 9);
+        }
+        Assert.Equal(3, view.Series[0].Marks.Count);
+    }
+
+    [Fact]
+    public async Task A_derived_metric_compares_its_ratios_month_by_month()
+    {
+        var report = SeasonReport(GoalsPer90.Id, Season2425, new ViewSpec(ChartKind.Line, AxisSource.Time),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing), Transform.GroupBy(Aggregators.Sum))
+            .ChangeFrom(Baseline.YearsBack(1), ComparisonOutput.Difference);
+        var view = await MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        double Per90(DateTime month) => 90.0 * SeasonSum("goals", Between(month, month.AddMonths(1))) / SeasonSum("minutes", Between(month, month.AddMonths(1)));
+        var march = view.Series[0].Marks.Single(m => m.Label == "2025-03");
+        Assert.Equal(Per90(new(2025, 3, 1)) - Per90(new(2024, 3, 1)), march.Value!.Value, 9);
+        Assert.Equal("/90", view.Axes[1].Unit);
+    }
+
+    [Fact]
+    public async Task Season_so_far_against_the_same_point_last_season()
+    {
+        // Half a season: the running total at the end of December, against last season's at the end of December.
+        var soFar = new DateInterval(Season2425.Start, Instant.FromUtc(new DateTime(2025, 1, 1)));
+        var report = SeasonReport(AppGoals.Id, soFar, new ViewSpec(ChartKind.Line, AxisSource.Time),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill), Transform.GroupBy(Aggregators.Sum), Transform.Cumulative(Aggregators.Sum));
+        var engine = MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine;
+
+        var chart = await engine.RunChartAsync(ChartSpec.Of(new SeriesSpec(report, "This season"), new SeriesSpec(report.Earlier(Baseline.SeasonsBack(1)), "Last season")), ProjectionOptions.Default);
+
+        Assert.Equal(["This season", "Last season"], chart.Series.Select(s => s.Name));
+        Assert.Equal(SeasonSum("goals", Between(new(2024, 7, 1), new(2025, 1, 1))), chart.Series[0].Marks[^1].Value!.Value);
+        Assert.Equal(SeasonSum("goals", Between(new(2023, 7, 1), new(2024, 1, 1))), chart.Series[1].Marks[^1].Value!.Value);
+        Assert.Equal(chart.Series[0].Marks.Select(m => m.Label), chart.Series[1].Marks.Select(m => m.Label));
+
+        // A running goals per 90 is goals so far ÷ minutes so far — even asked for as a running max (the formula says
+        // how its inputs aggregate), which of each input would be best month over best month.
+        var per90 = await engine.RunAsync(SeasonReport(GoalsPer90.Id, soFar, new ViewSpec(ChartKind.Line, AxisSource.Time),
+            Transform.Resample(Period.Month, Aggregators.Mean, GapPolicy.LeaveMissing), Transform.GroupBy(Aggregators.Mean),
+            Transform.Cumulative(Aggregators.Max)), ProjectionOptions.Default);
+        var soFarSql = Between(new(2024, 7, 1), new(2025, 1, 1));
+        Assert.Equal(90.0 * SeasonSum("goals", soFarSql) / SeasonSum("minutes", soFarSql), per90.Series[0].Marks[^1].Value!.Value, 9);
+    }
+
+    [Theory]
+    [InlineData("week", "year", "WeeksBack(52)")]
+    [InlineData("day", "month", "WeeksBack(52)")]
+    [InlineData("month", "week", "MonthsBack")]
+    [InlineData("season", "month", "SeasonsBack")]
+    public async Task Buckets_that_would_not_line_up_are_an_error_that_says_what_to_use(string grain, string unit, string advice)
+    {
+        var period = grain switch { "week" => Period.Week, "day" => Period.Day, "month" => Period.Month, _ => Period.Season };
+        var baseline = unit switch { "year" => Baseline.YearsBack(1), "month" => Baseline.MonthsBack(1), _ => Baseline.WeeksBack(1) };
+        var report = SeasonReport(AppGoals.Id, Season2425, new ViewSpec(ChartKind.Line, AxisSource.Time),
+            Transform.Resample(period, Aggregators.Sum, GapPolicy.LeaveMissing)).Earlier(baseline);
+
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine.RunAsync(report, ProjectionOptions.Default));
+        Assert.Contains(advice, error.Message);
+    }
+
+    [Fact]
+    public async Task The_same_week_last_year_is_52_weeks_back_and_lines_up()
+    {
+        var report = SeasonReport(AppGoals.Id, Season2425, new ViewSpec(ChartKind.Line, AxisSource.Time),
+            Transform.Resample(Period.Week, Aggregators.Sum, GapPolicy.LeaveMissing), Transform.GroupBy(Aggregators.Sum));
+        var engine = MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine;
+
+        var current = await engine.RunAsync(report, ProjectionOptions.Default);
+        var lastYear = await engine.RunAsync(report.Earlier(Baseline.WeeksBack(52)), ProjectionOptions.Default);
+
+        Assert.All(lastYear.Series[0].Marks, m => Assert.Equal(DayOfWeek.Monday, DateTimeOffset.FromUnixTimeMilliseconds(m.At!.Value).DayOfWeek));
+        Assert.NotEmpty(current.Series[0].Marks.Select(m => m.At).Intersect(lastYear.Series[0].Marks.Select(m => m.At)));
+    }
+
+    [Fact]
+    public async Task A_comparison_is_cached_and_goes_stale_with_the_baselines_data()
+    {
+        var report = SeasonReport(AppGoals.Id, Season2425, new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete)),
+            Transform.Total(Aggregators.Sum, Athlete));
+        var counting = new CountingSource(SeasonsSource());
+        var runtime = MeridianRuntime.InMemory(AppCatalog, counting);
+
+        var change = await runtime.Engine.RunAsync(report.ChangeFrom(Baseline.SeasonsBack(1)), ProjectionOptions.Default);
+        var earlier = await runtime.Engine.RunAsync(report.Earlier(Baseline.SeasonsBack(1)), ProjectionOptions.Default);
+        int fetches = counting.Raws + counting.Rollups + counting.Batches.Count;
+        Assert.NotEqual(change.Series[0].Marks[0].Value, earlier.Series[0].Marks[0].Value); // different views, not one cached for both
+
+        var again = await runtime.Engine.RunAsync(report.ChangeFrom(Baseline.SeasonsBack(1)), ProjectionOptions.Default);
+        Assert.Equal(change.Series[0].Marks.Select(m => m.Value), again.Series[0].Marks.Select(m => m.Value));
+        Assert.Equal(fetches, counting.Raws + counting.Rollups + counting.Batches.Count); // served from cache
+
+        await runtime.Invalidator.InvalidateAsync(new ChangeScope("club", "goals", new EntityRef(Athlete, 2)));
+        await runtime.Engine.RunAsync(report.ChangeFrom(Baseline.SeasonsBack(1)), ProjectionOptions.Default);
+        Assert.True(counting.Raws + counting.Rollups + counting.Batches.Count > fetches);
+
+        // A view of only the baseline is keyed to the baseline's data version too: a write that bumps the version
+        // (and, say, raced the view's eviction) must not leave last season's view in place.
+        await runtime.Engine.RunAsync(report.Earlier(Baseline.SeasonsBack(1)), ProjectionOptions.Default);
+        fetches = counting.Raws + counting.Rollups + counting.Batches.Count;
+        await new VersionBumpInvalidator(runtime.Versions).InvalidateAsync(new ChangeScope("club", "goals", new EntityRef(Athlete, 2)));
+        await runtime.Engine.RunAsync(report.Earlier(Baseline.SeasonsBack(1)), ProjectionOptions.Default);
+        Assert.True(counting.Raws + counting.Rollups + counting.Batches.Count > fetches);
+    }
+
+    [Fact]
+    public async Task A_difference_and_a_percent_change_are_different_views_even_with_the_same_unit()
+    {
+        var report = SeasonReport(AppGoals.Id, Season2425, new ViewSpec(ChartKind.Column, AxisSource.Category(Athlete), ValueUnit: new Unit("goals")),
+            Transform.Total(Aggregators.Sum, Athlete));
+        var engine = MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine;
+
+        var difference = await engine.RunAsync(report.ChangeFrom(Baseline.SeasonsBack(1), ComparisonOutput.Difference), ProjectionOptions.Default);
+        var percent = await engine.RunAsync(report.ChangeFrom(Baseline.SeasonsBack(1), ComparisonOutput.PercentChange), ProjectionOptions.Default);
+        Assert.NotEqual(difference.Series[0].Marks.Select(m => m.Value), percent.Series[0].Marks.Select(m => m.Value));
+    }
+
+    [Fact]
+    public async Task A_stored_dashboard_can_compare_this_season_with_last()
+    {
+        var dashboard = DashboardDefinition.Parse("""
+            { "title": "Seasons", "charts": [ { "title": "Goals so far",
+              "series": [
+                { "metric": "goals", "name": "This season",
+                  "transforms": [ { "kind": "resample", "period": "month", "aggregator": "sum", "gap": "zero-fill" },
+                                  { "kind": "groupBy", "aggregator": "sum" }, { "kind": "cumulative", "aggregator": "sum" } ] },
+                { "metric": "goals", "name": "Last season", "compare": { "unit": "season" },
+                  "transforms": [ { "kind": "resample", "period": "month", "aggregator": "sum", "gap": "zero-fill" },
+                                  { "kind": "groupBy", "aggregator": "sum" }, { "kind": "cumulative", "aggregator": "sum" } ] } ] } ] }
+            """).ToDashboard();
+        var context = new DashboardContext("club", [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2), new EntityRef(Athlete, 3)], Season2425);
+
+        var view = await MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine.RunDashboardAsync(dashboard, context, ProjectionOptions.Default);
+
+        var series = view.Charts[0].View.Series;
+        Assert.Equal(SeasonSum("goals", Between(new(2024, 7, 1), new(2025, 7, 1))), series[0].Marks[^1].Value!.Value);
+        Assert.Equal(SeasonSum("goals", Between(new(2023, 7, 1), new(2024, 7, 1))), series[1].Marks[^1].Value!.Value);
+    }
+
     private static PipelineSpec Monthly(MetricDefinition metric, ChartKind kind, params long[] athletes) => PipelineSpec.Create(
         "club", metric.Id, [.. (athletes.Length == 0 ? [1L] : athletes).Select(a => new EntityRef(Athlete, a))], FirstHalf,
         new ViewSpec(kind, AxisSource.Time, SeriesBy: athletes.Length > 1 ? Athlete : null),
@@ -1055,6 +1256,10 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"where","dimension":"venue","in":["Home"],"notIn":["Away"]}]}]}]}""", "charts[0].series[0].transforms[0]")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"range"}]}]}]}""", "charts[0].series[0].transforms[0]")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"share"}]}]}]}""", "charts[0].series[0].transforms[0].by")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","compare":{"unit":"decade"}}]}]}""", "charts[0].series[0].compare.unit")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","compare":{"unit":"season","back":0}}]}]}""", "charts[0].series[0].compare.back")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","compare":{"unit":"season","show":"ratio"}}]}]}""", "charts[0].series[0].compare.show")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"cumulative"}]}]}]}""", "charts[0].series[0].transforms[0].aggregator")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","view":{"kind":"donut"}}]}]}""", "charts[0].series[0].view.kind")]
     public void A_bad_definition_says_exactly_where_the_problem_is(string json, string path)
     {

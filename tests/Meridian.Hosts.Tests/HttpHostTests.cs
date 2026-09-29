@@ -202,8 +202,11 @@ public class HttpHostTests(WebApplicationFactory<Program> factory) : IClassFixtu
         }
 
         using var squad = await Run([1, 2, 3, 4]);
-        Assert.Equal(6, squad.RootElement.GetProperty("charts").GetArrayLength());
-        var share = squad.RootElement.GetProperty("charts")[4].GetProperty("chartView");
+        Assert.Equal(7, squad.RootElement.GetProperty("charts").GetArrayLength());
+        var share = squad.RootElement.GetProperty("charts")[5].GetProperty("chartView");
+        var soFar = squad.RootElement.GetProperty("charts")[1].GetProperty("chartView").GetProperty("series");
+        Assert.Equal(["Last 12 months", "The 12 before"], soFar.EnumerateArray().Select(s => s.GetProperty("name").GetString()));
+        Assert.All(soFar.EnumerateArray(), s => Assert.True(s.GetProperty("marks").GetArrayLength() >= 12));
         Assert.Equal(100, share.GetProperty("series")[0].GetProperty("marks").EnumerateArray().Sum(m => m.GetProperty("value").GetDouble()), 9);
         Assert.Equal(2, squad.RootElement.GetProperty("charts")[0].GetProperty("chartView").GetProperty("series").GetArrayLength());
 

@@ -46,13 +46,15 @@ public sealed record ChartDefinition(string Title, IReadOnlyList<SeriesDefinitio
 }
 
 /// <param name="Axis">"primary" (default) or "secondary".</param>
+/// <param name="Compare">Compare with an earlier period, e.g. <c>{ "unit": "season", "back": 1 }</c> for last season.</param>
 public sealed record SeriesDefinition(
     string Metric,
     IReadOnlyList<TransformDefinition>? Transforms = null,
     ViewDefinition? View = null,
     IReadOnlyList<string>? Dimensions = null,
     string? Name = null,
-    string? Axis = null)
+    string? Axis = null,
+    CompareDefinition? Compare = null)
 {
     internal DashboardSeries ToSeries(string path)
     {
@@ -69,7 +71,38 @@ public sealed record SeriesDefinition(
             (View ?? new ViewDefinition()).ToView(path + ".view"),
             [.. (Dimensions ?? []).Select(d => new DimensionId(d))],
             Name,
-            axis);
+            axis,
+            Compare?.ToComparison(path + ".compare"));
+    }
+}
+
+/// <summary>
+/// A comparison with an earlier period: <c>unit</c> (day, week, month, year or season) and <c>back</c> (how many,
+/// default 1); <c>show</c> is <c>baseline</c> (default — the earlier period's values on this period's axis),
+/// <c>difference</c> or <c>percent</c>.
+/// </summary>
+public sealed record CompareDefinition(string Unit, int Back = 1, string? Show = null)
+{
+    internal Comparison ToComparison(string path)
+    {
+        if (Back < 1) throw new DashboardDefinitionException(path + ".back", "must be at least 1.");
+        var baseline = Unit?.ToLowerInvariant() switch
+        {
+            "day" => Baseline.DaysBack(Back),
+            "week" => Baseline.WeeksBack(Back),
+            "month" => Baseline.MonthsBack(Back),
+            "year" => Baseline.YearsBack(Back),
+            "season" => Baseline.SeasonsBack(Back),
+            _ => throw new DashboardDefinitionException(path + ".unit", $"'{Unit}' isn't a unit; use day, week, month, year or season."),
+        };
+        var output = Show?.ToLowerInvariant() switch
+        {
+            null or "baseline" => ComparisonOutput.Baseline,
+            "difference" => ComparisonOutput.Difference,
+            "percent" => ComparisonOutput.PercentChange,
+            _ => throw new DashboardDefinitionException(path + ".show", $"'{Show}' isn't something to show; use baseline, difference or percent."),
+        };
+        return new Comparison(baseline, output);
     }
 }
 
@@ -81,7 +114,8 @@ public sealed record SeriesDefinition(
 /// <c>total</c> (<c>aggregator</c>, <c>by</c> — over the whole timeframe),
 /// <c>where</c> (<c>dimension</c> and <c>in</c> or <c>notIn</c> — e.g. home matches only),
 /// <c>range</c> (<c>min</c> and/or <c>max</c> — keep values in range),
-/// <c>share</c> (<c>by</c> — each value as a % of the total across those dimensions).
+/// <c>share</c> (<c>by</c> — each value as a % of the total across those dimensions),
+/// <c>cumulative</c> (<c>aggregator</c> — a running total, e.g. goals so far).
 /// Periods: <c>day</c>, <c>week</c>, <c>month</c>, <c>season</c>, <c>hour</c>, or a span such as <c>15m</c> / <c>6h</c>.
 /// Gaps: <c>leave-missing</c> (default), <c>zero-fill</c>, <c>carry-forward</c>, <c>interpolate</c>.
 /// </summary>
@@ -106,12 +140,13 @@ public sealed record TransformDefinition(
         "groupby" => Transform.GroupBy(ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))]),
         "total" => Transform.Total(ParseAggregator(path), [.. (By ?? []).Select(d => new DimensionId(d))]),
         "where" => Where(path),
+        "cumulative" => Transform.Cumulative(ParseAggregator(path)),
         "share" => By is { Count: > 0 } ? Transform.ShareOf([.. By.Select(d => new DimensionId(d))])
             : throw new DashboardDefinitionException(path + ".by", "a share needs the dimensions it's a share across, e.g. [\"athlete\"]."),
         "range" => Min is null && Max is null
             ? throw new DashboardDefinitionException(path, "a range needs a min, a max, or both.")
             : Transform.WhereValue(Min, Max),
-        _ => throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a transform; use resample, rolling, groupBy, total, where, range or share."),
+        _ => throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a transform; use resample, rolling, groupBy, total, where, range, share or cumulative."),
     };
 
     private ITransform Where(string path)

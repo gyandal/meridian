@@ -136,6 +136,36 @@ and the axis unit becomes `%`. Two things to know:
 - The total is of what the report has: its entities and filters. Focused on one player, a share is 100%.
 - Rates don't add up, so a share of a ratio metric (goals per 90) is refused; take shares of its numerator.
 
+## Comparisons over time
+
+A comparison is a report plus a `Baseline` — `SeasonsBack(1)`, `YearsBack(1)`, `MonthsBack(3)`,
+`WeeksBack(52)`, `DaysBack(7)`. The engine runs the report twice, over its timeframe and over the timeframe
+stepped back by the baseline, as two ordinary reports: both go through the cache and pushdown, and they
+load together. Then it moves the baseline's points forward by the same step, so last March's bucket becomes
+this March's, and either returns them (`Earlier` — an overlay for a multi-series chart) or joins them to the
+current points (`ChangeFrom` — difference or % change, only where both sides have a value; zero-fill to
+count empty buckets as 0).
+
+Steps are calendar steps in the report's zone, and a shifted bucket must be one of the report's own buckets,
+or the comparison would join the wrong things. So the engine checks the step against the report's buckets
+before fetching anything:
+
+| Buckets | Can step back in | Why not the others |
+|---|---|---|
+| none (raw points, or totals) | anything | — |
+| month | months, years, seasons | a week or day step lands mid-month |
+| week | weeks (`WeeksBack(52)` for "last year") | a year back from a Monday isn't a Monday |
+| day, hour… | days, weeks | a month or year step lands on another weekday, and 29 February has no partner |
+| season | seasons (or whole years) | — |
+
+A season step goes through the season calendar: whole years when seasons start on the same date each year,
+otherwise the days between the two seasons' starts. A timeframe that ends today steps back to the same day
+last season, so "so far this season" meets "so far last season" — combine it with `Transform.Cumulative`
+for the running total. A running total is an aggregation like any other, so for goals per 90 it's goals so
+far ÷ minutes so far.
+
+A comparison's view is cached, keyed to both periods' data versions.
+
 ## Multi-series charts
 
 A `ChartSpec` is a list of `SeriesSpec`s, each an ordinary report plus a display name and a value axis

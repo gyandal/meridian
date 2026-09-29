@@ -15,7 +15,9 @@ cases are welcome as issues.
 - Dimensions (slice a metric by venue, competition…; declarative `GroupBy` / `Total`), derived metrics
   (ratio of totals, e.g. goals per 90), multi-series charts with a second value axis, and dashboards
   (shared context, focus on one entity, stored as JSON definitions), declarative filters (by key and by
-  value), sums and differences of metrics, shares of a total
+  value), sums and differences of metrics, shares of a total, comparisons with an earlier period
+  (year-on-year, season-on-season, the same week last year; overlay, difference or % change) and running
+  totals
 - Sources: DuckDB (tables and Parquet in place, long or wide layout), MySQL
 - Hosts: REST API with a dashboard, an agent (MCP-style) tool surface
 - Benchmarks: synthetic to 1B rows, NYC taxi, TSBS ([BENCHMARKS.md](docs/BENCHMARKS.md))
@@ -23,8 +25,11 @@ cases are welcome as issues.
 ## Next
 
 - **More sources** — PostgreSQL / TimescaleDB, SQL Server, ClickHouse; each with pushdown where exact.
-- **Comparisons over time** — year-on-year and season-phase-aligned comparison ("round 5 this season vs
-  last"), period-over-period change, index-to-baseline.
+- **Round-aligned comparisons** — "after 5 appearances this season vs last": number each entity's
+  points in time order and compare by number rather than date. Needs a metric with a row per appearance
+  (minutes, or a derived metric): goals alone only have rows for matches with a goal, so numbering them
+  would count scoring matches.
+- **Index to a baseline** — each value as a percentage of its value at the start of the timeframe.
 - **More aggregators** — percentiles and quartiles, standard deviation and variance, distinct count,
   weighted mean.
 - **Redis cache backend** — `IPointCacheStore` over Redis, passing the shared conformance suite.
