@@ -1,0 +1,6 @@
+<Project>
+  <!-- Stand-ins for newer .NET APIs, for the packages' older targets only. -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true' and !$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net9.0'))">
+    <Compile Include="$(MSBuildThisFileDirectory)build/Polyfills.cs" Link="Polyfills.cs" Visible="false" />
+  </ItemGroup>
+</Project>

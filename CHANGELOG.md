@@ -5,6 +5,12 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
 ## [Unreleased]
 
+### Added
+- **.NET 8 and 9 support.** Every package now targets `net8.0`, `net9.0` and `net10.0`, and the whole test
+  suite runs on all three. Each app gets the build for its runtime, so .NET 10 apps keep the net10.0 build
+  (and its faster runtime — see docs/BENCHMARKS.md). The only newer API in use, `System.Threading.Lock`,
+  falls back to `Monitor` on .NET 8.
+
 ## [0.1.0-preview.4] — 2026-09-29
 
 ### Added

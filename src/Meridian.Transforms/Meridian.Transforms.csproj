@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <IsPackable>true</IsPackable>
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>$(SupportedTargetFrameworks)</TargetFrameworks>
     <Description>A composable transform algebra over time series: filter, map, rekey, reduce, per-group, resample, rolling windows and two-input joins.</Description>
   </PropertyGroup>
   <ItemGroup>

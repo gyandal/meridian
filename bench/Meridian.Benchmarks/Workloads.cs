@@ -7,7 +7,7 @@ namespace Meridian.Benchmarks;
 
 /// <summary>
 /// The in-engine hot paths (see docs/BENCHMARKS.md). Run with:
-///   dotnet run -c Release --project bench/Meridian.Benchmarks
+///   dotnet run -c Release -f net10.0 --project bench/Meridian.Benchmarks   (add --runtimes net8.0 net9.0 net10.0 to compare)
 /// [MemoryDiagnoser] makes allocations a first-class number — the goal is near-zero on aggregation.
 /// These are the baselines a columnar/SIMD pass will be measured against.
 /// </summary>

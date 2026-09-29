@@ -79,7 +79,8 @@ dotnet add package Meridian.Sources.DuckDb --prerelease   # or Meridian.Sources.
 dotnet add package Meridian.Views.Json --prerelease       # the JSON contract for ChartView
 ```
 
-Targets .NET 10.
+Runs on .NET 8, 9 and 10. Each package ships a build per runtime, so a .NET 10 app gets the build that
+uses .NET 10's newer APIs, and the full test suite runs on all three.
 
 ## Quick start
 

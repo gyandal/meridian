@@ -1,6 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <!-- Every supported runtime, so the same workloads can be compared across them with the runtimes option. -->
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>$(SupportedTargetFrameworks)</TargetFrameworks>
     <Nullable>enable</Nullable>
     <!-- BenchmarkDotNet requires an optimized (Release) build; warnings-as-errors kept from root props. -->
   </PropertyGroup>
