@@ -27,7 +27,8 @@ public abstract class SqlParityTests(IDatabaseFixture db)
     private static readonly MetricDefinition GoalsDef = new(new MetricId("goals"), "Goals", Unit.None, "sum", [Athlete, Venue], TimeGrain.Instant);
     private static readonly MetricDefinition TypedDef = new(new MetricId("typed"), "Typed", Unit.None, "sum", [Athlete], TimeGrain.Instant);
     private static readonly MetricDefinition IntsDef = new(new MetricId("ints"), "Ints", Unit.None, "mean", [Athlete], TimeGrain.Instant);
-    private static readonly InMemoryMetricCatalog Catalog = new([LoadDef, HrDef, WellnessDef, LegacyDef, LegacyNyDef, GoalsDef, TypedDef, IntsDef]);
+    private static readonly MetricDefinition ManyDef = new(new MetricId("many"), "Many", Unit.None, "mean", [Athlete], TimeGrain.Instant);
+    private static readonly InMemoryMetricCatalog Catalog = new([LoadDef, HrDef, WellnessDef, LegacyDef, LegacyNyDef, GoalsDef, TypedDef, IntsDef, ManyDef]);
 
     // Starts mid-day and ends mid-week so partial first/last buckets are exercised on every path.
     private static readonly DateInterval Timeframe = new(
@@ -201,6 +202,19 @@ public abstract class SqlParityTests(IDatabaseFixture db)
     }
 
     [SkippableTheory]
+    [InlineData("median")]
+    [InlineData("p90")]
+    [InlineData("stddev")]
+    [InlineData("mean")]
+    public async Task Buckets_of_tens_of_thousands_of_values_are_exact(string aggregator)
+    {
+        // 30,000 readings a day: an approximate quantile (sampling, sketches) would drift from the engine's exact one.
+        Skip.If(db.SkipReason is not null, db.SkipReason);
+        var days = new DateInterval(Instant.FromUtc(new DateTime(2025, 2, 10)), Instant.FromUtc(new DateTime(2025, 2, 12)));
+        await AssertParity(Source("many"), Reference("many"), Spec(ManyDef, Period.Day, Aggregator(aggregator), GapPolicy.LeaveMissing, days), In("UTC"), aggregator, aggregator);
+    }
+
+    [SkippableTheory]
     [InlineData("UTC", DayOfWeek.Sunday)]
     [InlineData("Europe/London", DayOfWeek.Sunday)]
     [InlineData("America/New_York", DayOfWeek.Saturday)]
@@ -263,6 +277,8 @@ public sealed class SqlServerParityTests(SqlServerFixture db) : SqlParityTests(d
 
     protected override string Column(string name) => $"[{name}]";
 }
+
+public sealed class ClickHouseParityTests(ClickHouseFixture db) : SqlParityTests(db), IClassFixture<ClickHouseFixture>;
 
 public sealed class MySqlParityTests(MySqlFixture db) : SqlParityTests(db), IClassFixture<MySqlFixture>
 {

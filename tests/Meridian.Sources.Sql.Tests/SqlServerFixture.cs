@@ -33,13 +33,34 @@ public sealed class SqlServerFixture : IDatabaseFixture, IAsyncLifetime
             return;
         }
 
-        await using var sql = new SqlConnection(_container.GetConnectionString());
-        await sql.OpenAsync();
+        await using var sql = await LoginAsync(_container.GetConnectionString());
         await CopyTablesAsync(sql);
         await ExecuteAsync(sql, "CREATE VIEW wide_as_long AS SELECT entity_id, ts, 'load' AS metric, [load] AS value FROM wide UNION ALL SELECT entity_id, ts, 'hr', hr FROM wide");
         // The same readings as datetimeoffset values stored at +02:00: each is the same instant, with its own offset,
         // which the source must apply before bucketing.
         await ExecuteAsync(sql, "SELECT entity_id, metric, TODATETIMEOFFSET(DATEADD(hour, 2, ts), '+02:00') AS ts, value INTO datapoints_tz FROM datapoints");
+    }
+
+    /// <summary>A started container can still refuse logins while SQL Server finishes starting (slowly, on a busy
+    /// machine): retry for up to two minutes.</summary>
+    private static async Task<SqlConnection> LoginAsync(string connectionString)
+    {
+        var deadline = DateTime.UtcNow.AddMinutes(2);
+        while (true)
+        {
+            var connection = new SqlConnection(connectionString);
+            try
+            {
+                await connection.OpenAsync();
+                return connection;
+            }
+            catch (SqlException) when (DateTime.UtcNow < deadline)
+            {
+                await connection.DisposeAsync();
+                SqlConnection.ClearAllPools();
+                await Task.Delay(TimeSpan.FromSeconds(2));
+            }
+        }
     }
 
     public async Task DisposeAsync()

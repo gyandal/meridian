@@ -107,6 +107,13 @@ public sealed class DuckDbFixture : IDisposable
             CREATE TABLE ints AS
             SELECT entity_id, 'ints' AS metric, ts, CAST(round(value) AS INTEGER) AS value FROM datapoints WHERE metric = 'load';
 
+            -- Big buckets: 30,000 readings in each of two days, more than any sampling shortcut (ClickHouse's median
+            -- is exact only up to 8,192 values) would read, so an approximate median or percentile shows.
+            CREATE TABLE many AS
+            SELECT e.entity_id, 'many' AS metric, TIMESTAMP '2025-02-10' + to_microseconds(i.i * 5760000) AS ts,
+                   CAST(hash(e.entity_id * 1000003 + i.i) % 100000 AS DOUBLE) / 100 AS value
+            FROM range(1, 3) AS e(entity_id), range(0, 30000) AS i(i);
+
             CREATE TABLE typed (entity_id INTEGER, metric VARCHAR, ts TIMESTAMP, value DECIMAL(10, 2));
             INSERT INTO typed VALUES (1, 'typed', TIMESTAMP '2025-02-01 10:00', 12.50), (1, 'typed', TIMESTAMP '2025-02-02 10:00', 7.25);
 

@@ -174,7 +174,8 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
         if (shape is null)
         {
             // Values may be DECIMAL or INTEGER in real schemas (fares, counts): the database casts, we read doubles.
-            sql = $"SELECT {o.MetricColumn}, {o.EntityColumn}, {_sql.ToDouble(o.ValueColumn)}, {o.TimestampColumn}{select} FROM {o.Relation} " +
+            // The time as the dialect reads it (a zoned type normalised to UTC); filters and ordering use the column.
+            sql = $"SELECT {o.MetricColumn}, {o.EntityColumn}, {_sql.ToDouble(o.ValueColumn)}, {_sql.TimestampValue(o.TimestampColumn)}{select} FROM {o.Relation} " +
                   Where(entities, metrics.Count) + " ORDER BY " + Ordering([o.MetricColumn, o.EntityColumn, o.TimestampColumn, .. dimensionColumns], [1, 2, 4, .. Enumerable.Range(5, dimensionColumns.Count)]);
         }
         else
@@ -204,7 +205,7 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
         string sql;
         if (shape is null)
         {
-            sql = $"SELECT {o.EntityColumn}, {o.TimestampColumn}, {string.Join(", ", columns.Select(_sql.ToDouble))}{select} " +
+            sql = $"SELECT {o.EntityColumn}, {_sql.TimestampValue(o.TimestampColumn)}, {string.Join(", ", columns.Select(_sql.ToDouble))}{select} " +
                   $"FROM {o.Relation} " + Where(entities, metricCount: 0) + " ORDER BY " + Ordering([o.EntityColumn, o.TimestampColumn, .. dimensionColumns], [1, 2, .. Enumerable.Range(3 + columns.Count, dimensionColumns.Count)]);
         }
         else

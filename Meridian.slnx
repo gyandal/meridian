@@ -16,6 +16,7 @@
     <Project Path="src/Meridian.Hosts.Http/Meridian.Hosts.Http.csproj" />
     <Project Path="src/Meridian.Hosts.Mcp/Meridian.Hosts.Mcp.csproj" />
     <Project Path="src/Meridian.Semantics/Meridian.Semantics.csproj" />
+    <Project Path="src/Meridian.Sources.ClickHouse/Meridian.Sources.ClickHouse.csproj" />
     <Project Path="src/Meridian.Sources.DuckDb/Meridian.Sources.DuckDb.csproj" />
     <Project Path="src/Meridian.Sources.MySql/Meridian.Sources.MySql.csproj" />
     <Project Path="src/Meridian.Sources.PostgreSql/Meridian.Sources.PostgreSql.csproj" />
