@@ -40,6 +40,13 @@ public abstract record ForecastModel
     /// <summary>The next <paramref name="horizon"/> values after <paramref name="history"/> (regular, no gaps).</summary>
     public abstract double[] Project(ReadOnlySpan<double> history, int horizon);
 
+    /// <summary>
+    /// How wrong the next <paramref name="horizon"/> values may be, as weights on independent errors of a common
+    /// spread — or null when the history is too short to say. Being linear, it gives the range of any sum of
+    /// future values too (a running total), not just of each one.
+    /// </summary>
+    public abstract ForecastErrors? Errors(ReadOnlySpan<double> history, int horizon);
+
     private static int Positive(int n) =>
         n > 0 ? n : throw new ArgumentOutOfRangeException(nameof(n), n, "A season is at least one bucket long.");
 
@@ -53,6 +60,26 @@ public abstract record ForecastModel
             double sum = 0;
             foreach (var y in history) sum += y;
             return Enumerable.Repeat(sum / history.Length, horizon).ToArray();
+        }
+
+        /// <summary>y = μ + ε. A future value's error is its own ε less the error in the estimated μ (the history's
+        /// mean ε), so the range widens for a pace estimated from few buckets.</summary>
+        public override ForecastErrors? Errors(ReadOnlySpan<double> history, int horizon)
+        {
+            int n = history.Length;
+            if (n < 2) return null;
+            double mean = 0, squares = 0;
+            foreach (var y in history) mean += y;
+            mean /= n;
+            foreach (var y in history) squares += (y - mean) * (y - mean);
+            var weights = new double[horizon][];
+            for (int h = 0; h < horizon; h++)
+            {
+                weights[h] = new double[n + horizon];
+                for (int t = 0; t < n; t++) weights[h][t] = -1.0 / n;
+                weights[h][n + h] = 1;
+            }
+            return new ForecastErrors(weights, Math.Sqrt(squares / (n - 1)), n - 1);
         }
     }
 
@@ -78,6 +105,34 @@ public abstract record ForecastModel
             for (int h = 1; h <= horizon; h++) result[h - 1] = intercept + slope * (n - 1 + h);
             return result;
         }
+
+        /// <summary>y = a + b·t + ε. A future value's error is its own ε less the fitted line's error there, which grows
+        /// the further it is from the middle of the history.</summary>
+        public override ForecastErrors? Errors(ReadOnlySpan<double> history, int horizon)
+        {
+            int n = history.Length;
+            double meanX = (n - 1) / 2.0, sxx = 0, meanY = 0;
+            foreach (var y in history) meanY += y;
+            meanY /= n;
+            double sxy = 0;
+            for (int i = 0; i < n; i++)
+            {
+                sxx += (i - meanX) * (i - meanX);
+                sxy += (i - meanX) * (history[i] - meanY);
+            }
+            double slope = sxy / sxx, intercept = meanY - slope * meanX, squares = 0;
+            for (int i = 0; i < n; i++) squares += Math.Pow(history[i] - (intercept + slope * i), 2);
+
+            var weights = new double[horizon][];
+            for (int h = 0; h < horizon; h++)
+            {
+                double x = n + h;
+                weights[h] = new double[n + horizon];
+                for (int t = 0; t < n; t++) weights[h][t] = -(1.0 / n + (x - meanX) * (t - meanX) / sxx);
+                weights[h][n + h] = 1;
+            }
+            return new ForecastErrors(weights, Math.Sqrt(squares / (n - 2)), n - 2);
+        }
     }
 
     private sealed record SeasonalNaiveModel(int SeasonLength) : ForecastModel
@@ -91,6 +146,23 @@ public abstract record ForecastModel
             for (int h = 1; h <= horizon; h++) result[h - 1] = history[history.Length - SeasonLength + (h - 1) % SeasonLength];
             return result;
         }
+
+        /// <summary>y_t = y_(t−m) + ε: a season further ahead adds another season's change, so the range widens once
+        /// per season; the spread is that of the history's season-on-season changes.</summary>
+        public override ForecastErrors? Errors(ReadOnlySpan<double> history, int horizon)
+        {
+            int m = SeasonLength, changes = history.Length - m;
+            if (changes < 1) return null;
+            double squares = 0;
+            for (int t = m; t < history.Length; t++) squares += Math.Pow(history[t] - history[t - m], 2);
+            var weights = new double[horizon][];
+            for (int h = 0; h < horizon; h++)
+            {
+                weights[h] = new double[horizon];
+                for (int j = h % m; j <= h; j += m) weights[h][j] = 1; // this bucket's position, each season from now to it
+            }
+            return new ForecastErrors(weights, Math.Sqrt(squares / changes), changes);
+        }
     }
 
     private sealed record HoltWintersModel(int? SeasonLength) : ForecastModel
@@ -102,6 +174,36 @@ public abstract record ForecastModel
         public override int MinimumHistory => SeasonLength is { } m ? 2 * m : 4;
 
         public override double[] Project(ReadOnlySpan<double> history, int horizon)
+        {
+            var (alpha, beta, gamma, _) = Fit(history);
+            Smooth(history, alpha, beta, gamma, horizon, out var forecast);
+            return forecast;
+        }
+
+        /// <summary>
+        /// The innovations form of the smoother: a value h steps ahead is off by its own error plus c_j times each
+        /// earlier future error, c_j = α(1 + jβ) + γ(1 − α) when j is a whole number of seasons. The weights are
+        /// taken as known, so on short histories the range is narrower than it should be.
+        /// </summary>
+        public override ForecastErrors? Errors(ReadOnlySpan<double> history, int horizon)
+        {
+            var (alpha, beta, gamma, sse) = Fit(history);
+            int m = SeasonLength ?? 0, steps = history.Length - (m > 0 ? m : 1);
+            if (steps < 2) return null;
+            var weights = new double[horizon][];
+            for (int h = 0; h < horizon; h++)
+            {
+                weights[h] = new double[horizon];
+                weights[h][h] = 1;
+                for (int j = 1; j <= h; j++)
+                {
+                    weights[h][h - j] = alpha * (1 + j * beta) + (m > 0 && j % m == 0 ? gamma * (1 - alpha) : 0);
+                }
+            }
+            return new ForecastErrors(weights, Math.Sqrt(sse / steps), DegreesOfFreedom: null);
+        }
+
+        private (double Alpha, double Beta, double Gamma, double Error) Fit(ReadOnlySpan<double> history)
         {
             double bestError = double.PositiveInfinity;
             (double Alpha, double Beta, double Gamma) best = default;
@@ -116,8 +218,7 @@ public abstract record ForecastModel
                     best = (alpha, beta, gamma);
                 }
             }
-            Smooth(history, best.Alpha, best.Beta, best.Gamma, horizon, out var forecast);
-            return forecast;
+            return (best.Alpha, best.Beta, best.Gamma, bestError);
         }
 
         /// <summary>Runs the smoother over the history; returns the sum of squared one-step-ahead errors.</summary>
@@ -170,6 +271,46 @@ public abstract record ForecastModel
     }
 }
 
+/// <summary>
+/// A forecast's errors: future value h is off by <see cref="Sigma"/> × Σ_i Weights[h][i]·z_i for independent standard
+/// errors z_i. <see cref="DegreesOfFreedom"/> — the history's, when the spread is estimated from it — makes a
+/// range use Student's t (wider for short histories); null uses the normal distribution.
+/// </summary>
+public sealed record ForecastErrors(double[][] Weights, double Sigma, double? DegreesOfFreedom)
+{
+    /// <summary>The half-width of the range, at <paramref name="percent"/>, of Σ_h <paramref name="sum"/>[h]·value[h].</summary>
+    public double HalfWidth(double percent, ReadOnlySpan<double> sum)
+    {
+        double p = 1 - (1 - percent / 100) / 2;
+        double q = DegreesOfFreedom is { } v ? Statistics.StudentTQuantile(p, v) : Statistics.NormalQuantile(p);
+        int innovations = Weights.Length == 0 ? 0 : Weights[0].Length;
+        double variance = 0;
+        for (int i = 0; i < innovations; i++)
+        {
+            double w = 0;
+            for (int h = 0; h < sum.Length; h++) w += sum[h] * Weights[h][i];
+            variance += w * w;
+        }
+        return q * Sigma * Math.Sqrt(variance);
+    }
+}
+
+/// <summary>Steps that combine values can't carry a forecast's range: they refuse ranged points rather than draw a wrong band.</summary>
+public static class ForecastRanges
+{
+    /// <summary>Throws if <paramref name="input"/> has ranges; <paramref name="step"/> names what would combine them.</summary>
+    public static void EnsureNone(PointBlock input, string step)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        if (input.HasRanges)
+        {
+            throw new InvalidOperationException(
+                $"These points include forecast ranges, which {step} can't carry: the range of a combination isn't the combination " +
+                "of ranges. Combine first, then forecast the result with a range — for a running total, forecast with runningTotal.");
+        }
+    }
+}
+
 /// <summary>How far a forecast reaches: a number of buckets, or to the end of the season.</summary>
 public sealed record ForecastHorizon
 {
@@ -193,9 +334,10 @@ public sealed record ForecastHorizon
 /// bucket is from its last. Gaps inside a key's history are interpolated for fitting (and not output). Every
 /// projected point is flagged <see cref="MeasureFlags.Estimated"/>, and so is anything later computed from one.
 /// </summary>
-internal sealed class ForecastTransform(ForecastModel model, ForecastHorizon horizon) : ITransform, ICacheIdentity
+internal sealed class ForecastTransform(ForecastModel model, ForecastHorizon horizon, double? range, bool runningTotal) : ITransform, ICacheIdentity
 {
-    public string CacheIdentity => $"forecast({model.Name};{horizon})";
+    public string CacheIdentity => string.Create(CultureInfo.InvariantCulture,
+        $"forecast({model.Name};{horizon};{range?.ToString(CultureInfo.InvariantCulture) ?? "-"};{(runningTotal ? "total" : "each")})");
 
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
@@ -233,7 +375,26 @@ internal sealed class ForecastTransform(ForecastModel model, ForecastHorizon hor
         for (long bucket = Next(last); future.Count < (horizon.Count ?? int.MaxValue) && bucket < end; bucket = Next(bucket)) future.Add(bucket);
 
         var output = PointBlock.Builder.Like(input);
-        for (int i = 0; i < input.Count; i++) output.Add(input.Row(i));
+        var observedTotal = new Dictionary<PointKey, double>();
+        if (runningTotal)
+        {
+            // The history as a running total, as Cumulative(Sum) would give it: a missing bucket carries the total.
+            foreach (var key in order)
+            {
+                double total = 0;
+                bool any = false;
+                foreach (var (at, value) in series[key])
+                {
+                    if (value is { } v) { total += v; any = true; }
+                    output.Add(key, any ? Measurement.Of(total) : Measurement.Missing, new Instant(at));
+                }
+                observedTotal[key] = total;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < input.Count; i++) output.Add(input.Row(i));
+        }
         if (future.Count == 0) return output.Build();
 
         foreach (var key in order)
@@ -250,10 +411,23 @@ internal sealed class ForecastTransform(ForecastModel model, ForecastHorizon hor
                 bucket = Next(bucket);
                 if (bucket >= future[0]) steps[bucket] = step;
             }
-            var projected = model.Project(filled, steps[future[^1]]);
+            int reach = steps[future[^1]];
+            var projected = model.Project(filled, reach);
+            var errors = range is null ? null : model.Errors(filled, reach);
             foreach (var at in future)
             {
-                output.Add(key, Measurement.Of(projected[steps[at] - 1], estimated: true), new Instant(at));
+                int step = steps[at];
+                // One future bucket, or with a running total every bucket from this key's last up to it.
+                var sum = new double[reach];
+                for (int h = runningTotal ? 0 : step - 1; h < step; h++) sum[h] = 1;
+                double value = runningTotal ? observedTotal[key] + projected.AsSpan(0, step).ToArray().Sum() : projected[step - 1];
+                ValueRange? band = null;
+                if (errors is not null)
+                {
+                    double half = errors.HalfWidth(range!.Value, sum);
+                    band = new ValueRange(value - half, value + half);
+                }
+                output.Add(key, Measurement.Of(value, estimated: true), new Instant(at), band);
             }
         }
         return output.Build();

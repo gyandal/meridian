@@ -44,6 +44,13 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
   `until: "season-end"`).
 - `Period.Named(name)` resolves a period from its name, including spans such as `15m` or `30s`.
 - Demo: "goals on pace for" on the example dashboard, with projected points drawn dotted.
+- **Forecast ranges**: `Transform.Forecast(model, horizon, range: 80)` gives projected points the range
+  they're expected to fall in (`Point.Range`, `PointBlock.RangeAt`, `MarkView.Low` / `High`), from each
+  model's own errors (`ForecastModel.Errors`): Student's t prediction intervals for `Mean` and `Trend`,
+  season-on-season changes for `SeasonalNaive`, the innovations form for `HoltWinters`.
+  `runningTotal: true` forecasts the running total with the range of the whole sum ("on pace for 14,
+  between 11 and 17"). Steps that combine values refuse ranged points rather than draw a wrong band.
+  Dashboard definitions gain `range` and `runningTotal` on `forecast`; the demo draws ranges as bands.
 
 ### Changed
 - A report that filters or groups by a dimension it doesn't keep is now an error that says to declare it

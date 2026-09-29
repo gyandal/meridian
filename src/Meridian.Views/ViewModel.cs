@@ -45,7 +45,8 @@ public enum AnnotationKind
 /// the label (produced from the typed key + a formatter), the epoch-millis <see cref="At"/> (computed
 /// once), the semantic <see cref="Status"/>, and the theme-resolved <see cref="ColorToken"/>.
 /// <see cref="Estimated"/> is true for a projected value — a forecast, or a total that includes one — so it can
-/// be drawn differently (dashed, faded); it's omitted for observed values.
+/// be drawn differently (dashed, faded); it's omitted for observed values. <see cref="Low"/> and <see cref="High"/>
+/// are a projected value's range (e.g. 80%), for a band or error bar; omitted when there's none.
 /// </summary>
 public sealed record MarkView(
     string Label,
@@ -56,7 +57,9 @@ public sealed record MarkView(
     double? X = null,
     double? Y = null,
     double? Z = null,
-    bool? Estimated = null);
+    bool? Estimated = null,
+    double? Low = null,
+    double? High = null);
 
 /// <summary>A series. In a multi-series chart built from several reports, <see cref="Kind"/> says how this
 /// series is drawn (columns for goals, a line for goals per 90) and <see cref="Axis"/> which value axis it

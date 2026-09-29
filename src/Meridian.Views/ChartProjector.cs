@@ -59,10 +59,14 @@ public sealed class ChartProjector : IChartProjector
             {
                 bool present = (block.Flags[i] & MeasureFlags.Missing) == 0;
                 double? value = present ? block.Values[i] : null;
+                var band = present ? block.RangeAt(i) : null;
                 if (present)
                 {
-                    if (block.Values[i] < min) min = block.Values[i];
-                    if (block.Values[i] > max) max = block.Values[i];
+                    // The axis fits the range too, so a band is never clipped.
+                    double lo = Math.Min(block.Values[i], band?.Low ?? double.PositiveInfinity);
+                    double hi = Math.Max(block.Values[i], band?.High ?? double.NegativeInfinity);
+                    if (lo < min) min = lo;
+                    if (hi > max) max = hi;
                 }
 
                 var status = present && spec.Status is { } rule ? rule.Evaluate(block.Values[i]) : SemanticStatus.Neutral;
@@ -87,7 +91,8 @@ public sealed class ChartProjector : IChartProjector
                 }
 
                 marks.Add(new MarkView(label, value, at, status, color,
-                    Estimated: present && (block.Flags[i] & MeasureFlags.Estimated) != 0 ? true : null));
+                    Estimated: present && (block.Flags[i] & MeasureFlags.Estimated) != 0 ? true : null,
+                    Low: band?.Low, High: band?.High));
             }
 
             // Temporal marks are ordered by instant; sorting by formatted name would get months wrong.

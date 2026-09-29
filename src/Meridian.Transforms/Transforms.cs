@@ -39,9 +39,20 @@ public static class Transform
     /// estimated, as is anything computed from them (a running total, a squad total), and views mark them so a
     /// chart can draw them differently. Follow a <see cref="ForecastModel.Mean"/> forecast with
     /// <see cref="Cumulative"/> for "on pace for".
+    /// <para>
+    /// With <paramref name="range"/> (a percentage, e.g. 80) each projected point also gets the range it's expected
+    /// to fall in, from the model's own errors — wider further ahead, and for a model fitted to little history. A
+    /// range can't be carried through a later step that combines values (a squad total, a running total, a ratio):
+    /// the lower bound of a sum isn't the sum of lower bounds. So combine first and forecast the result, and for
+    /// "on pace for" use <paramref name="runningTotal"/>, which forecasts the running total with its true range.
+    /// </para>
     /// </summary>
-    public static ITransform Forecast(ForecastModel model, ForecastHorizon horizon) =>
-        new ForecastTransform(model ?? throw new ArgumentNullException(nameof(model)), horizon ?? throw new ArgumentNullException(nameof(horizon)));
+    public static ITransform Forecast(ForecastModel model, ForecastHorizon horizon, double? range = null, bool runningTotal = false) =>
+        new ForecastTransform(
+            model ?? throw new ArgumentNullException(nameof(model)),
+            horizon ?? throw new ArgumentNullException(nameof(horizon)),
+            range is null or (> 0 and < 100) ? range : throw new ArgumentOutOfRangeException(nameof(range), range, "A range is a percentage between 0 and 100, e.g. 80."),
+            runningTotal);
 
     /// <summary>Rolling window over time, per key. Window is (t - <paramref name="window"/>, t].</summary>
     public static ITransform Rolling(TimeSpan window, IAggregator aggregator) =>
@@ -131,6 +142,7 @@ internal sealed class GroupByTransform(IAggregator aggregator, DimensionId[] by,
 
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
+        ForecastRanges.EnsureNone(input, keepTime ? "a group-by" : "a total");
         var groups = new Dictionary<(PointKey Key, long At), List<double>>();
         var estimated = new HashSet<(PointKey Key, long At)>();
         var order = new List<(PointKey Key, long At)>();
@@ -172,6 +184,7 @@ internal sealed class ShareTransform(DimensionId[] across) : IShareTransform, IC
 
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
+        ForecastRanges.EnsureNone(input, "a share");
         var totals = new Dictionary<(PointKey, long), double>();
         var estimated = new HashSet<(PointKey, long)>();
         for (int i = 0; i < input.Count; i++)
@@ -358,6 +371,7 @@ internal sealed class ReduceTransform(Func<Point, PointKey> keySelector, IAggreg
 
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
+        ForecastRanges.EnsureNone(input, "a reduce");
         var groups = new Dictionary<PointKey, List<double>>();
         var order = new List<PointKey>();
         for (int i = 0; i < input.Count; i++)
@@ -443,6 +457,7 @@ internal sealed class CumulativeTransform(IAggregator aggregator) : IAggregating
 
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
+        ForecastRanges.EnsureNone(input, "a running total");
         var byKey = new Dictionary<PointKey, List<int>>();
         var order = new List<PointKey>();
         for (int i = 0; i < input.Count; i++)
@@ -504,6 +519,7 @@ internal sealed class RollingTransform(TimeSpan window, IAggregator aggregator) 
 
     public PointBlock Apply(PointBlock input, TransformContext ctx)
     {
+        ForecastRanges.EnsureNone(input, "a rolling window");
         // Group indices by key; skip rows without a position.
         var byKey = new Dictionary<PointKey, List<int>>();
         var order = new List<PointKey>();

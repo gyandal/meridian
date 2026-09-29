@@ -4,6 +4,9 @@
     <Description>A composable transform algebra over time series: filter, map, rekey, reduce, per-group, resample, rolling windows and two-input joins.</Description>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Meridian.Transforms.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../Meridian.Core/Meridian.Core.csproj" />
     <ProjectReference Include="../Meridian.Time/Meridian.Time.csproj" />
   </ItemGroup>

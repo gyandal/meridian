@@ -1274,6 +1274,65 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.Equal(view.Charts[0].View.Series[0].Marks, again.Charts[0].View.Series[0].Marks);
     }
 
+    [Fact]
+    public async Task On_pace_for_has_a_range_computed_from_the_months_so_far()
+    {
+        var report = SeasonReport(AppGoals.Id, FirstHalf2425, new ViewSpec(ChartKind.Line, AxisSource.Time),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill), Transform.GroupBy(Aggregators.Sum),
+            Transform.Forecast(ForecastModel.Mean, ForecastHorizon.SeasonEnd, range: 80, runningTotal: true));
+        var view = await MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        // Six observed months; the June total is six more at their mean, give or take t(0.9, 5)·s·√(6 + 6²/6).
+        var months = Enumerable.Range(0, 6).Select(i => (double)SeasonSum("goals", Between(new DateTime(2024, 7, 1).AddMonths(i), new DateTime(2024, 8, 1).AddMonths(i)))).ToArray();
+        double mean = months.Average(), s = Math.Sqrt(months.Sum(m => (m - mean) * (m - mean)) / 5);
+        double half = 1.475884 * s * Math.Sqrt(6 + 36.0 / 6);
+
+        var june = view.Series[0].Marks[^1];
+        Assert.Equal(2 * months.Sum(), june.Value!.Value, 9);
+        Assert.Equal(june.Value!.Value - half, june.Low!.Value, 4);
+        Assert.Equal(june.Value!.Value + half, june.High!.Value, 4);
+        Assert.Null(view.Series[0].Marks[5].Low);                                   // December happened: no range
+        Assert.True(view.Axes[1].Max >= june.High);                                // the axis makes room for the band
+        Assert.True(view.Series[0].Marks[6].High - view.Series[0].Marks[6].Low < june.High - june.Low); // wider further out
+    }
+
+    [Fact]
+    public async Task A_range_forecast_of_a_rates_inputs_is_refused_and_of_the_rate_itself_is_fine()
+    {
+        var engine = MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine;
+        ITransform Monthly() => Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill);
+
+        // Before the running total, the forecast runs on goals and on minutes; their ranges can't make the rate's.
+        var inputs = SeasonReport(GoalsPer90.Id, FirstHalf2425, new ViewSpec(ChartKind.Line, AxisSource.Time), Monthly(), Transform.GroupBy(Aggregators.Sum),
+            Transform.Forecast(ForecastModel.Mean, ForecastHorizon.Buckets(3), range: 80), Transform.Cumulative(Aggregators.Sum));
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => engine.RunAsync(inputs, ProjectionOptions.Default));
+        Assert.Contains("forecast ranges", error.Message);
+
+        // After the last aggregation it forecasts the monthly rate, which has a range of its own.
+        var rate = SeasonReport(GoalsPer90.Id, FirstHalf2425, new ViewSpec(ChartKind.Line, AxisSource.Time), Monthly(), Transform.GroupBy(Aggregators.Sum),
+            Transform.Forecast(ForecastModel.Mean, ForecastHorizon.Buckets(3), range: 80));
+        var view = await engine.RunAsync(rate, ProjectionOptions.Default);
+        Assert.All(view.Series[0].Marks.Skip(6), m => Assert.True(m.Low < m.Value && m.Value < m.High));
+
+        // Last season's forecast, drawn on this season's axis, keeps its range; the change from it can't have one.
+        var earlier = await engine.RunAsync(rate.Earlier(Baseline.SeasonsBack(1)), ProjectionOptions.Default);
+        Assert.NotNull(earlier.Series[0].Marks[^1].Low);
+        Assert.Contains("forecast ranges", (await Assert.ThrowsAnyAsync<Exception>(() =>
+            engine.RunAsync(rate.ChangeFrom(Baseline.SeasonsBack(1)), ProjectionOptions.Default))).Message);
+
+        // A custom aggregating step needn't know about ranges; the ratio itself still refuses them.
+        var custom = SeasonReport(GoalsPer90.Id, FirstHalf2425, new ViewSpec(ChartKind.Line, AxisSource.Time), Monthly(), Transform.GroupBy(Aggregators.Sum),
+            Transform.Forecast(ForecastModel.Mean, ForecastHorizon.Buckets(3), range: 80), new PassThrough(Aggregators.Sum));
+        Assert.Contains("a ratio", (await Assert.ThrowsAnyAsync<Exception>(() => engine.RunAsync(custom, ProjectionOptions.Default))).Message);
+    }
+
+    private sealed class PassThrough(IAggregator aggregator) : IAggregatingTransform
+    {
+        public IAggregator Aggregator => aggregator;
+        public ITransform WithAggregator(IAggregator other) => new PassThrough(other);
+        public PointBlock Apply(PointBlock input, TransformContext ctx) => input;
+    }
+
     private static PipelineSpec Monthly(MetricDefinition metric, ChartKind kind, params long[] athletes) => PipelineSpec.Create(
         "club", metric.Id, [.. (athletes.Length == 0 ? [1L] : athletes).Select(a => new EntityRef(Athlete, a))], FirstHalf,
         new ViewSpec(kind, AxisSource.Time, SeriesBy: athletes.Length > 1 ? Athlete : null),
@@ -1414,6 +1473,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"seasonal-naive","n":3}]}]}]}""", "charts[0].series[0].transforms[0].season")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean","n":3,"until":"season-end"}]}]}]}""", "charts[0].series[0].transforms[0]")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean"}]}]}]}""", "charts[0].series[0].transforms[0]")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean","n":2,"range":150}]}]}]}""", "charts[0].series[0].transforms[0].range")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"bottom","n":3,"aggregator":"p101"}]}]}]}""", "charts[0].series[0].transforms[0].aggregator")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","view":{"kind":"donut"}}]}]}""", "charts[0].series[0].view.kind")]
     public void A_bad_definition_says_exactly_where_the_problem_is(string json, string path)
