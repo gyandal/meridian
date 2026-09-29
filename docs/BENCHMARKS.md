@@ -119,6 +119,22 @@ The in-engine resample is the known hot spot: it groups through dictionaries and
 (365k points → 98 MB). That's why reports push resampling down to the database where they can, and
 it's the target of the columnar pass on the [roadmap](../ROADMAP.md).
 
+### Across .NET 8, 9 and 10
+
+The packages ship a build per runtime, so a .NET 10 app runs code compiled for .NET 10 and nothing is
+given up to support older versions. The same workloads on each runtime (`--runtimes net8.0 net9.0 net10.0`,
+short job, same machine — indicative):
+
+| Benchmark (100 entities) | .NET 8 | .NET 9 | .NET 10 |
+|---|---:|---:|---:|
+| `ResampleWeekly_Season` | 84.8 ms · 145 MB | 87.8 ms · 145 MB | **69.1 ms · 98 MB** |
+| `Acwr_OneSeason` | 0.18 ms | 0.18 ms | 0.17 ms |
+| `AggregateMean_100k` | 92 µs | 94 µs | 93 µs |
+
+.NET 8 and 9 run at the same speed; .NET 10's runtime makes the allocation-heavy resample about 18%
+faster with a third less memory. Pushed-down reports spend their time in the database, so they're the
+same on all three.
+
 ## Reproduce
 
 ```bash
@@ -136,7 +152,9 @@ dotnet run -c Release --project bench/Meridian.Bench.Scale -- tsbs-generate --sc
 dotnet run -c Release --project bench/Meridian.Bench.Scale -- tsbs-run --instances 20 --label my-machine
 
 # micro-benchmarks
-dotnet run -c Release --project bench/Meridian.Benchmarks -- --job short
+dotnet run -c Release -f net10.0 --project bench/Meridian.Benchmarks -- --job short
+# the same workloads on every supported runtime
+dotnet run -c Release -f net10.0 --project bench/Meridian.Benchmarks -- --job short --runtimes net8.0 net9.0 net10.0
 ```
 
 Generated data goes under `data/` (git-ignored; ~172M rows is ~0.6 GB, ~1B rows ~3.3 GB). Results are

@@ -1,6 +1,9 @@
 <Project>
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <!-- Packages (and their tests) build for every supported .NET, so adopting Meridian doesn't mean upgrading first.
+         Each app gets the build for its own runtime: a .NET 10 app runs the net10.0 build. -->
+    <SupportedTargetFrameworks>net8.0;net9.0;net10.0</SupportedTargetFrameworks>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

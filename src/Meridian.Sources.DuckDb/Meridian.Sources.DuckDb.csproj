@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <IsPackable>true</IsPackable>
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>$(SupportedTargetFrameworks)</TargetFrameworks>
     <Description>Meridian IPointSource over DuckDB — query DuckDB tables or Parquet files directly, with time-bucket aggregation pushed down into SQL.</Description>
   </PropertyGroup>
   <ItemGroup>

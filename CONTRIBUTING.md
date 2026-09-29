@@ -5,7 +5,8 @@ open an issue first so we can agree the shape before you spend time on it.
 
 ## Build and test
 
-You need the **.NET 10 SDK**. No database server: tests, samples and the dashboard use in-memory data
+You need the **.NET 10 SDK**, plus the **.NET 8 and 9 runtimes** to run the tests on every version the
+packages target (`dotnet test -f net10.0` runs just one). No database server: tests, samples and the dashboard use in-memory data
 and embedded DuckDB.
 
 ```bash
