@@ -18,3 +18,15 @@ public enum GapPolicy
     /// <summary>Emit every bucket in range; empty runs are linearly interpolated between neighbours.</summary>
     Interpolate,
 }
+
+/// <summary>
+/// Which buckets a filling <see cref="GapPolicy"/> fills: those between a series' own first and last points
+/// (<see cref="Observed"/>, the default), or every bucket of the report's timeframe (<see cref="Timeframe"/>) — so a
+/// quiet first or last month is a 0, not a missing column. A series with no points at all still produces nothing:
+/// nothing says it exists.
+/// </summary>
+public enum FillAcross
+{
+    Observed,
+    Timeframe,
+}

@@ -40,6 +40,13 @@ public sealed record MetricDefinition(
     /// <summary>For a derived metric, how it's computed from other metrics; null for a stored metric.</summary>
     public MetricFormula? Formula { get; init; }
 
+    /// <summary>
+    /// How values combine across dimensions: <see cref="Semantics.Additivity.Additive"/> (goals, minutes — the
+    /// default) or <see cref="Semantics.Additivity.SemiAdditive"/> (levels such as open issues, a balance, stock on
+    /// hand: they sum across dimensions, never across time).
+    /// </summary>
+    public Additivity Additivity { get; init; } = Additivity.Additive;
+
     public bool IsDerived => Formula is not null;
 
     /// <summary>
@@ -80,6 +87,21 @@ public sealed record MetricDefinition(
         {
             Formula = new LinearFormula(terms, aggregation, missing),
         };
+}
+
+/// <summary>How a metric's values combine across its dimensions.</summary>
+public enum Additivity
+{
+    /// <summary>Values add up in every direction: goals per venue sum to goals, and so do goals per day.</summary>
+    Additive,
+
+    /// <summary>
+    /// A level, measured at points in time: open issues per priority sum to open issues on that day, but a month's
+    /// open issues aren't the sum of its days — take the last (or the mean). When a report drops a dimension, the
+    /// rows it folds together at the same time are summed first, so "open issues per family at month end" counts
+    /// every priority.
+    /// </summary>
+    SemiAdditive,
 }
 
 /// <summary>How a derived metric is computed from other (stored) metrics.</summary>

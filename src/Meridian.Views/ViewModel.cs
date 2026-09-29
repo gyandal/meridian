@@ -96,9 +96,31 @@ public sealed record AnnotationView(
 
 /// <summary>The chart-agnostic, serialisable render model. The single output every front-end and the
 /// MCP `query` tool consume.</summary>
+/// <param name="Stacked">True when the series stack at each x position (stacked columns or areas); the value axis
+/// then spans the stacks' totals. Omitted (null) when they don't, so existing JSON is unchanged.</param>
 public sealed record ChartView(
     ChartKind Kind,
     IReadOnlyList<SeriesView> Series,
     IReadOnlyList<AxisView> Axes,
     LegendView Legend,
-    IReadOnlyList<AnnotationView> Annotations);
+    IReadOnlyList<AnnotationView> Annotations,
+    bool? Stacked = null);
+
+/// <summary>The value range stacked series need: at each x position, positives stack up from 0 and negatives down.</summary>
+internal static class Stacks
+{
+    public static (double? Min, double? Max) Extent(IEnumerable<SeriesView> series)
+    {
+        var up = new Dictionary<(long?, string), double>();
+        var down = new Dictionary<(long?, string), double>();
+        foreach (var mark in series.SelectMany(s => s.Marks))
+        {
+            if (mark.Value is not { } v) continue;
+            var position = (mark.At, mark.At is null ? mark.Label : "");
+            var stack = v >= 0 ? up : down;
+            stack[position] = stack.GetValueOrDefault(position) + v;
+        }
+        if (up.Count == 0 && down.Count == 0) return (null, null);
+        return (Math.Min(0, down.Count > 0 ? down.Values.Min() : 0), Math.Max(0, up.Count > 0 ? up.Values.Max() : 0));
+    }
+}

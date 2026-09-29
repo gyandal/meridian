@@ -180,12 +180,17 @@ function renderChart(svg, view){
     const t=el("text",{x,y:H-9,"text-anchor":"middle"});t.textContent=lbl;svg.appendChild(t);});
 
   // columns first (behind), then areas and lines
-  const bw=slotW*0.8/Math.max(barSeries.length,1);
+  // Stacked columns share the slot: each x position keeps a running base, up for positives and down for negatives.
+  const stacked=view.stacked===true, bases=new Map();
+  const bw=stacked?slotW*0.8:slotW*0.8/Math.max(barSeries.length,1);
   barSeries.forEach((s,bi)=>{ const {Y}=scales[axisOf(s)];
     s.marks.forEach(k=>{ if(k.value==null)return;
-      const x=X(k)-slotW*0.4+bi*bw;
+      const x=X(k)-slotW*0.4+(stacked?0:bi*bw);
       const col=k.colorToken||s.colorToken;
-      const r=el("rect",{x:x+1,y:Y(k.value),width:Math.max(1,bw-2),height:m.t+ih-Y(k.value),rx:2,fill:col,
+      let top=Y(k.value), bottom=m.t+ih;
+      if(stacked){const key=`${k.at??k.label}|${axisOf(s)}|${k.value<0?"-":"+"}`, base=bases.get(key)||0; bases.set(key,base+k.value);
+        top=Y(Math.max(base,base+k.value)); bottom=Y(Math.min(base,base+k.value));}
+      const r=el("rect",{x:x+1,y:top,width:Math.max(1,bw-2),height:Math.max(0,bottom-top),rx:stacked?0:2,fill:col,
         "fill-opacity":k.estimated?.3:null,stroke:k.estimated?col:null,"stroke-dasharray":k.estimated?"3 2":null});
       r.appendChild(tip(k));svg.appendChild(r);
       if(k.low!=null){const cx=x+bw/2;svg.appendChild(el("path",{d:`M ${cx} ${Y(k.low)} V ${Y(k.high)} M ${cx-3} ${Y(k.low)} H ${cx+3} M ${cx-3} ${Y(k.high)} H ${cx+3}`,stroke:col,"stroke-width":1.2,fill:"none"}));}});

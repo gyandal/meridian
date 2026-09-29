@@ -103,6 +103,14 @@ public sealed class DuckDbFixture : IDisposable
             UNION ALL
             SELECT entity_id, 'goals', ts, goals, venue FROM m WHERE goals > 0;
 
+            -- A level: open issues per site, family and priority, snapshotted daily (a few snapshots missing).
+            CREATE TABLE levels AS
+            SELECT s.site AS entity_id, 'open-issues' AS metric, TIMESTAMP '2025-01-01' + to_days(d.d) AS ts,
+                   CASE WHEN hash(s.site * 101 + d.d * 7 + f.f * 3 + p.p) % 13 = 0 THEN NULL
+                        ELSE CAST(5 * f.f + 2 * p.p + (hash(s.site + d.d * 31 + f.f * 5 + p.p) % 9) AS DOUBLE) END AS value,
+                   'family' || f.f AS family, 'p' || p.p AS priority
+            FROM range(1, 3) AS s(site), range(0, 120) AS d(d), range(1, 3) AS f(f), range(1, 4) AS p(p);
+
             CREATE TABLE typed (entity_id INTEGER, metric VARCHAR, ts TIMESTAMP, value DECIMAL(10, 2));
             INSERT INTO typed VALUES (1, 'typed', TIMESTAMP '2025-02-01 10:00', 12.50), (1, 'typed', TIMESTAMP '2025-02-02 10:00', 7.25);
 
@@ -1333,6 +1341,179 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         public PointBlock Apply(PointBlock input, TransformContext ctx) => input;
     }
 
+    // ---------------------------------------------------------------------------------- filling across the timeframe
+
+    private static PipelineSpec AcrossTimeframe(MetricDefinition metric, DateInterval timeframe, IPeriod period, IAggregator aggregator) => PipelineSpec.Create(
+        "test", metric.Id, [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2)], timeframe,
+        new ViewSpec(ChartKind.Column, AxisSource.Time, SeriesBy: Athlete),
+        Transform.Resample(period, aggregator, GapPolicy.ZeroFill, FillAcross.Timeframe));
+
+    private static readonly DateInterval NovemberToJune = new(Instant.FromUtc(new DateTime(2024, 11, 1)), Instant.FromUtc(new DateTime(2025, 7, 1)));
+
+    [Theory]
+    [InlineData("UTC")]
+    [InlineData("Europe/London")]
+    public async Task Zero_fill_across_the_timeframe_pushes_down_and_zeroes_the_quiet_months_at_both_ends(string zone)
+    {
+        // Readings run from January to April; the report asks for November to June.
+        var spec = AcrossTimeframe(LoadDef, NovemberToJune, Period.Month, Aggregators.Sum);
+        await AssertParity(LoadDef, Source(), spec, In(zone));
+
+        // The timeframe ends at 1 July 00:00 UTC — 01:00 on 1 July in London, so London's July is (just) in it.
+        var view = await MeridianRuntime.InMemory(Catalog, Source()).Engine.RunAsync(spec, In(zone));
+        string[] months = ["2024-11", "2024-12", "2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06", .. zone == "UTC" ? Array.Empty<string>() : ["2025-07"]];
+        Assert.All(view.Series, s =>
+        {
+            Assert.Equal(months, s.Marks.Select(m => m.Label));
+            Assert.All(s.Marks.Where(m => m.Label is "2024-11" or "2024-12" or "2025-05" or "2025-06" or "2025-07"), m => Assert.Equal(0, m.Value));
+        });
+
+        // Without the option, only the months each series has data for (and between).
+        var observed = await MeridianRuntime.InMemory(Catalog, Source()).Engine.RunAsync(
+            spec with { Transforms = [Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill)] }, In(zone));
+        Assert.All(observed.Series, s => Assert.Equal(4, s.Marks.Count));
+    }
+
+    [Fact]
+    public async Task Local_dates_fill_across_the_timeframe_as_wall_clock_and_push_down()
+    {
+        var spec = AcrossTimeframe(WellnessDef, NovemberToJune, Period.Month, Aggregators.Mean);
+        await AssertParity(WellnessDef, Source("wellness", StoredTime.Local), spec, In("Pacific/Auckland"));
+        var view = await MeridianRuntime.InMemory(Catalog, Source("wellness", StoredTime.Local)).Engine.RunAsync(spec, In("Pacific/Auckland"));
+        Assert.All(view.Series, s => Assert.Equal(8, s.Marks.Count));
+    }
+
+    [Fact]
+    public async Task Daily_zero_fill_runs_to_the_last_london_day_of_the_timeframe()
+    {
+        // 25 April (BST) to 6 May 00:00 BST: readings stop on 30 April; 1–5 May are zeros, and 6 May isn't in.
+        var timeframe = new DateInterval(Instant.FromUtc(new DateTime(2025, 4, 24, 23, 0, 0)), Instant.FromUtc(new DateTime(2025, 5, 5, 23, 0, 0)));
+        var spec = AcrossTimeframe(LoadDef, timeframe, Period.Day, Aggregators.Sum);
+        await AssertParity(LoadDef, Source(), spec, In("Europe/London"));
+
+        var view = await MeridianRuntime.InMemory(Catalog, Source()).Engine.RunAsync(spec, In("Europe/London"));
+        Assert.All(view.Series, s =>
+        {
+            Assert.Equal(11, s.Marks.Count);
+            Assert.All(s.Marks.TakeLast(5), m => Assert.Equal(0, m.Value));
+        });
+    }
+
+    [Fact]
+    public async Task A_comparisons_baseline_fills_across_its_own_earlier_window()
+    {
+        // This year: May 2024 to April 2025. Last year's window is May 2023 to April 2024, and the matches only
+        // start in July 2023 — so the baseline's first two months are zeros, drawn as May and June 2024.
+        var timeframe = new DateInterval(Instant.FromUtc(new DateTime(2024, 5, 1)), Instant.FromUtc(new DateTime(2025, 5, 1)));
+        var report = SeasonReport(AppGoals.Id, timeframe, new ViewSpec(ChartKind.Column, AxisSource.Time),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.ZeroFill, FillAcross.Timeframe), Transform.GroupBy(Aggregators.Sum));
+
+        var lastYear = await MeridianRuntime.InMemory(AppCatalog, SeasonsSource()).Engine.RunAsync(report.Earlier(Baseline.YearsBack(1)), ProjectionOptions.Default);
+
+        var marks = lastYear.Series[0].Marks;
+        Assert.Equal(12, marks.Count);
+        Assert.Equal(["2024-05", "2024-06"], marks.Take(2).Select(m => m.Label));
+        Assert.Equal([0.0, 0.0], marks.Take(2).Select(m => m.Value!.Value));
+        Assert.Equal(SeasonSum("goals", Between(new(2023, 7, 1), new(2023, 8, 1))), marks[2].Value!.Value);
+    }
+
+    [Fact]
+    public void A_stored_resample_can_fill_across_the_timeframe_and_only_then_is_its_identity_different()
+    {
+        ICacheIdentity Resample(string? across) => (ICacheIdentity)Assert.IsType<ResampleTransform>(DashboardDefinition.Parse($$"""
+            {"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[
+              {"kind":"resample","period":"month","aggregator":"sum","gap":"zero-fill"{{(across is null ? "" : $",\"across\":\"{across}\"")}}}]}]}]}
+            """).ToDashboard().Charts[0].Series[0].Transforms[0]);
+
+        Assert.Equal("resample(month,sum,ZeroFill)", Resample(null).CacheIdentity);                 // existing keys unchanged
+        Assert.Equal(Resample(null).CacheIdentity, Resample("observed").CacheIdentity);
+        Assert.Equal("resample(month,sum,ZeroFill,timeframe)", Resample("timeframe").CacheIdentity);
+    }
+
+    [Fact]
+    public async Task A_stored_view_can_stack_and_a_stacked_view_is_cached_apart_from_a_plain_one()
+    {
+        DashboardDefinition Definition(string? stacked) => DashboardDefinition.Parse($$"""
+            {"title":"x","charts":[{"title":"c","series":[{"metric":"goals","dimensions":["venue"],
+              "view":{"kind":"column","seriesBy":"venue"{{(stacked is null ? "" : $",\"stacked\":{stacked}")}}},
+              "transforms":[{"kind":"resample","period":"month","aggregator":"sum"},{"kind":"groupBy","aggregator":"sum","by":["venue"]}]}]}]}
+            """);
+
+        Assert.True(Definition("true").ToDashboard().Charts[0].Series[0].View.Stacked);
+        Assert.False(Definition(null).ToDashboard().Charts[0].Series[0].View.Stacked);
+        Assert.DoesNotContain("stacked", Definition(null).ToJson(), StringComparison.Ordinal); // absent stays absent
+        Assert.Contains("\"stacked\": true", Definition("true").ToJson(), StringComparison.Ordinal);
+
+        // The same report stacked and not: two views, not one cached for both.
+        var engine = MeridianRuntime.InMemory(GoalsCatalog, GoalsSource()).Engine;
+        var context = new DashboardContext("club", [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2)], Season);
+        var plain = await engine.RunDashboardAsync(Definition(null).ToDashboard(), context, ProjectionOptions.Default);
+        var stackedView = await engine.RunDashboardAsync(Definition("true").ToDashboard(), context, ProjectionOptions.Default);
+        Assert.Null(plain.Charts[0].View.Stacked);
+        Assert.True(stackedView.Charts[0].View.Stacked);
+    }
+
+    // ---------------------------------------------------------------------------------- semi-additive levels
+
+    private static readonly DimensionId FamilyDim = new("family");
+    private static readonly DimensionId PriorityDim = new("priority");
+    private static readonly MetricDefinition OpenIssuesDef = new(new MetricId("open-issues"), "Open issues", Unit.None, "last",
+        [Athlete, FamilyDim, PriorityDim], TimeGrain.Daily) { Additivity = Additivity.SemiAdditive };
+    private static readonly InMemoryMetricCatalog LevelsCatalog = new([OpenIssuesDef]);
+
+    private DuckDbPointSource LevelsSource() => new(new DuckDbSourceOptions(db.ConnectionString, Relation: "levels",
+        DimensionColumns: new Dictionary<string, string> { ["family"] = "family", ["priority"] = "priority" }), Athlete);
+
+    private static PipelineSpec LevelReport(IAggregator aggregator, params DimensionId[] keep) => PipelineSpec.Create(
+        "ops", OpenIssuesDef.Id, [new EntityRef(Athlete, 1)],
+        new DateInterval(Instant.FromUtc(new DateTime(2025, 1, 1)), Instant.FromUtc(new DateTime(2025, 5, 1))),
+        new ViewSpec(ChartKind.Column, AxisSource.Time, SeriesBy: FamilyDim),
+        Transform.Resample(Period.Month, aggregator, GapPolicy.LeaveMissing)).WithDimensions(keep);
+
+    [Theory]
+    [InlineData("last")]
+    [InlineData("mean")]
+    [InlineData("max")]
+    [InlineData("sum")]
+    public async Task A_level_that_drops_a_dimension_is_the_same_with_or_without_pushdown(string aggregator)
+    {
+        Assert.True(Aggregators.TryResolve(aggregator, out var agg));
+        var report = LevelReport(agg, FamilyDim); // priority is dropped
+
+        var counting = new CountingSource(LevelsSource());
+        var viaSource = await MeridianRuntime.InMemory(LevelsCatalog, counting).Engine.RunAsync(report, ProjectionOptions.Default);
+        var inEngine = await MeridianRuntime.InMemory(LevelsCatalog, new RawOnly(LevelsSource())).Engine.RunAsync(report, ProjectionOptions.Default);
+
+        // Only a sum groups the same in SQL as summing the parts first; anything else is computed in the engine.
+        Assert.Equal(aggregator == "sum" ? 1 : 0, counting.Rollups);
+        Assert.Equal(aggregator == "sum" ? 0 : 1, counting.Raws);
+        AssertSameView(inEngine, viaSource);
+    }
+
+    [Fact]
+    public async Task A_level_at_month_end_is_the_total_across_the_dropped_dimension_and_keeping_it_still_pushes_down()
+    {
+        var view = await MeridianRuntime.InMemory(LevelsCatalog, LevelsSource()).Engine.RunAsync(LevelReport(Aggregators.Last, FamilyDim), ProjectionOptions.Default);
+
+        // Each day's total over the priorities with a value; the month's last day that has one.
+        var expected = db.Rows("""
+            WITH daily AS (
+                SELECT family, ts, sum(value) AS total FROM levels
+                WHERE entity_id = 1 AND ts < TIMESTAMP '2025-05-01' GROUP BY family, ts HAVING count(value) > 0)
+            SELECT family, strftime(date_trunc('month', ts), '%Y-%m'), arg_max(total, ts) FROM daily GROUP BY 1, 2 ORDER BY 1, 2
+            """, r => (Family: r.GetString(0), Month: r.GetString(1), Value: r.GetDouble(2)));
+        Assert.Equal(8, expected.Count);
+        foreach (var (family, month, value) in expected)
+        {
+            Assert.Equal(value, view.Series.Single(s => s.Name.EndsWith(family, StringComparison.Ordinal)).Marks.Single(m => m.Label == month).Value);
+        }
+
+        // Keeping every dimension, nothing is folded, so a last pushes down as before.
+        var counting = new CountingSource(LevelsSource());
+        await MeridianRuntime.InMemory(LevelsCatalog, counting).Engine.RunAsync(LevelReport(Aggregators.Last, FamilyDim, PriorityDim), ProjectionOptions.Default);
+        Assert.Equal(1, counting.Rollups);
+    }
+
     private static PipelineSpec Monthly(MetricDefinition metric, ChartKind kind, params long[] athletes) => PipelineSpec.Create(
         "club", metric.Id, [.. (athletes.Length == 0 ? [1L] : athletes).Select(a => new EntityRef(Athlete, a))], FirstHalf,
         new ViewSpec(kind, AxisSource.Time, SeriesBy: athletes.Length > 1 ? Athlete : null),
@@ -1474,6 +1655,7 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean","n":3,"until":"season-end"}]}]}]}""", "charts[0].series[0].transforms[0]")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean"}]}]}]}""", "charts[0].series[0].transforms[0]")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"forecast","model":"mean","n":2,"range":150}]}]}]}""", "charts[0].series[0].transforms[0].range")]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"resample","period":"month","aggregator":"sum","gap":"zero-fill","across":"season"}]}]}]}""", "charts[0].series[0].transforms[0].across")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","transforms":[{"kind":"bottom","n":3,"aggregator":"p101"}]}]}]}""", "charts[0].series[0].transforms[0].aggregator")]
     [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals","view":{"kind":"donut"}}]}]}""", "charts[0].series[0].view.kind")]
     public void A_bad_definition_says_exactly_where_the_problem_is(string json, string path)

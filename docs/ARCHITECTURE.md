@@ -91,6 +91,15 @@ Filtering is declarative too, and comes in two kinds that behave differently:
 Filtering or grouping by a dimension the report folds away is an error, not an empty chart: declare it
 with `WithDimensions`.
 
+**Levels are semi-additive.** Open issues per family and priority add up across priorities, but a month's
+open issues aren't the sum of its days. Declare such a metric `Additivity = Additivity.SemiAdditive`: when a
+report drops a dimension (keeps family, not priority), the engine sums the rows that fold together *at the
+same time* before any transform runs, so `Resample(Month, Last)` is the month-end total across priorities
+rather than one priority's count. The parts must share a timestamp — a snapshot per day, say — to be summed.
+A pushed-down rollup would group by the kept dimensions and apply Last to the parts, so for a semi-additive
+metric that drops a dimension, only a Sum is pushed down; any other aggregator runs in the engine, and the
+results are identical either way.
+
 Attributes rarely sit on the fact row: the venue belongs to the match, a player's team changes over time.
 Meridian doesn't model joins; make the source's relation a view that joins them onto each row — for
 time-varying attributes, the value *as of the row's date* — and map the resulting columns.
@@ -265,6 +274,12 @@ minutes and goals per 90 are one query — and `ChartComposer` combines the part
 kind (columns, line, area), series get distinct colours and names ("Goals", or "Goals · player 7" when a
 part has a series per entity), and each side gets one value axis built from its parts. Parts must share
 the x-axis. A dashboard runs all its charts through `RunChartsAsync` to share fetches across them.
+
+**Stacking** is part of the view: `ViewSpec(…, Stacked: true)` (`"stacked": true` in a dashboard definition)
+sets `ChartView.Stacked`, and the value axis then spans each x position's stacked total — positives up from 0,
+negatives down — rather than its largest single value, so stacks aren't clipped. A composed chart takes
+stacking from its first part, as it does the chart kind, and stacks across all parts on an axis. Views that
+don't stack omit the property, so their JSON is unchanged.
 
 ## Dashboards
 

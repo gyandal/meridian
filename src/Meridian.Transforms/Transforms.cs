@@ -22,8 +22,11 @@ public static class Transform
         new PerGroupTransform(keySelector, inner);
 
     /// <summary>Collapse the time axis into tumbling buckets. Wraps <see cref="Resampler"/>.</summary>
-    public static ITransform Resample(IPeriod period, IAggregator aggregator, GapPolicy gap) =>
-        new ResampleTransform(period, aggregator, gap);
+    /// <param name="across">Which buckets a filling <paramref name="gap"/> fills: between each series' first and last
+    /// points (the default), or across the report's timeframe (<see cref="TransformContext.Timeframe"/>), so a quiet
+    /// first or last month is a 0 rather than missing.</param>
+    public static ITransform Resample(IPeriod period, IAggregator aggregator, GapPolicy gap, FillAcross across = FillAcross.Observed) =>
+        new ResampleTransform(period, aggregator, gap, across);
 
     /// <summary>
     /// A running total over time, per key: each point becomes the aggregate of its key's values up to and
@@ -433,18 +436,21 @@ internal sealed class PerGroupTransform(Func<Point, PointKey> keySelector, ITran
 }
 
 /// <summary>Public so the engine can recognise a leading resample and push it down to a capable source.</summary>
-public sealed class ResampleTransform(IPeriod period, IAggregator aggregator, GapPolicy gap) : IAggregatingTransform, ICacheIdentity
+public sealed class ResampleTransform(IPeriod period, IAggregator aggregator, GapPolicy gap, FillAcross across = FillAcross.Observed) : IAggregatingTransform, ICacheIdentity
 {
+    public FillAcross Across { get; } = across;
+
     public IPeriod Period { get; } = period;
     public IAggregator Aggregator { get; } = aggregator;
     public GapPolicy Gap { get; } = gap;
 
-    public string CacheIdentity => $"resample({Period.Name},{Aggregator.Name},{Gap})";
+    // The fill window joins the identity only when set, so existing cache keys don't change.
+    public string CacheIdentity => $"resample({Period.Name},{Aggregator.Name},{Gap}{(Across == FillAcross.Timeframe ? ",timeframe" : "")})";
 
-    public ITransform WithAggregator(IAggregator other) => new ResampleTransform(Period, other, Gap);
+    public ITransform WithAggregator(IAggregator other) => new ResampleTransform(Period, other, Gap, Across);
 
     public PointBlock Apply(PointBlock input, TransformContext ctx) =>
-        Resampler.Resample(input, Period, Aggregator, Gap, ctx.Calendar);
+        Resampler.Resample(input, Period, Aggregator, Gap, ctx.Calendar, Across == FillAcross.Timeframe ? ctx.Timeframe : null);
 }
 
 internal sealed class CumulativeTransform(IAggregator aggregator) : IAggregatingTransform, ICacheIdentity

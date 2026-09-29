@@ -22,7 +22,8 @@ public sealed record ViewSpec(
     DimensionId? SeriesBy = null,      // dimension that splits series; null = a single series
     string? ValueAxisTitle = null,
     Unit? ValueUnit = null,
-    IStatusRule? Status = null);
+    IStatusRule? Status = null,
+    bool Stacked = false);                // stack the series (columns or areas) at each x position
 
 /// <summary>Turns a value into a semantic status. Alerting logic lives here as data, decoupled from
 /// both the transform layer and the colour.</summary>

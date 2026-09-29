@@ -172,7 +172,7 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
         {
             // Values may be DECIMAL or INTEGER in real schemas (fares, counts): the database casts, we read doubles.
             sql = $"SELECT {o.MetricColumn}, {o.EntityColumn}, {_sql.ToDouble(o.ValueColumn)}, {o.TimestampColumn}{select} FROM {o.Relation} " +
-                  Where(entities, metrics.Count) + " ORDER BY " + Ordering([o.MetricColumn, o.EntityColumn, o.TimestampColumn], [1, 2, 4]);
+                  Where(entities, metrics.Count) + " ORDER BY " + Ordering([o.MetricColumn, o.EntityColumn, o.TimestampColumn, .. dimensionColumns], [1, 2, 4, .. Enumerable.Range(5, dimensionColumns.Count)]);
         }
         else
         {
@@ -180,7 +180,7 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
             sql = $"SELECT {o.MetricColumn}, {o.EntityColumn}, {Aggregate(shape, o.ValueColumn)}, {bucket} AS bucket{select} " +
                   $"FROM {o.Relation} " + Where(entities, metrics.Count) + shape.Exact +
                   " GROUP BY " + Ordering([o.MetricColumn, o.EntityColumn, bucket, .. dimensionColumns], [1, 2, 4, .. Enumerable.Range(5, dimensionColumns.Count)]) +
-                  " ORDER BY " + Ordering([o.MetricColumn, o.EntityColumn, bucket], [1, 2, 4]);
+                  " ORDER BY " + Ordering([o.MetricColumn, o.EntityColumn, bucket, .. dimensionColumns], [1, 2, 4, .. Enumerable.Range(5, dimensionColumns.Count)]);
         }
         var keys = new KeyReader(entityDimension, dimensions, entityOrdinal: 1, firstDimensionOrdinal: 4);
         return QueryAsync(sql, metrics, timeframe, entities, shape?.Axis ?? o.Time.Axis, raw: shape is null, keys, ct, shape?.WallRange);
@@ -202,7 +202,7 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
         if (shape is null)
         {
             sql = $"SELECT {o.EntityColumn}, {o.TimestampColumn}, {string.Join(", ", columns.Select(_sql.ToDouble))}{select} " +
-                  $"FROM {o.Relation} " + Where(entities, metricCount: 0) + " ORDER BY " + Ordering([o.EntityColumn, o.TimestampColumn], [1, 2]);
+                  $"FROM {o.Relation} " + Where(entities, metricCount: 0) + " ORDER BY " + Ordering([o.EntityColumn, o.TimestampColumn, .. dimensionColumns], [1, 2, .. Enumerable.Range(3 + columns.Count, dimensionColumns.Count)]);
         }
         else
         {
@@ -210,7 +210,7 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
             sql = $"SELECT {o.EntityColumn}, {bucket} AS bucket, {string.Join(", ", columns.Select(c => Aggregate(shape, c)))}{select} " +
                   $"FROM {o.Relation} " + Where(entities, metricCount: 0) + shape.Exact +
                   " GROUP BY " + Ordering([o.EntityColumn, bucket, .. dimensionColumns], [1, 2, .. Enumerable.Range(3 + columns.Count, dimensionColumns.Count)]) +
-                  " ORDER BY " + Ordering([o.EntityColumn, bucket], [1, 2]);
+                  " ORDER BY " + Ordering([o.EntityColumn, bucket, .. dimensionColumns], [1, 2, .. Enumerable.Range(3 + columns.Count, dimensionColumns.Count)]);
         }
         var keys = new KeyReader(entityDimension, dimensions, entityOrdinal: 0, firstDimensionOrdinal: 2 + columns.Count);
 
@@ -240,7 +240,9 @@ public class SqlPointSource(SqlSourceOptions options, DimensionId entityDimensio
         return metrics.Select((m, i) => (m.Id, Block: builders[i].Build())).ToDictionary(x => x.Id, x => x.Block);
     }
 
-    /// <summary>GROUP BY / ORDER BY items: select-list ordinals where the dialect allows them, else the expressions.</summary>
+    /// <summary>GROUP BY / ORDER BY items: select-list ordinals where the dialect allows them, else the expressions.
+    /// Rows are ordered by their dimension values too, so the order keys are first seen in — and with it a chart's
+    /// series order — is the same from a raw fetch and a pushed-down one.</summary>
     private string Ordering(IReadOnlyList<string> expressions, IReadOnlyList<int> ordinals) =>
         _sql.GroupsByOrdinal
             ? string.Join(", ", ordinals.Select(i => i.ToString(CultureInfo.InvariantCulture)))

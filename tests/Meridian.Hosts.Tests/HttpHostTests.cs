@@ -203,6 +203,11 @@ public class HttpHostTests(WebApplicationFactory<Program> factory) : IClassFixtu
 
         using var squad = await Run([1, 2, 3, 4]);
         Assert.Equal(9, squad.RootElement.GetProperty("charts").GetArrayLength());
+        var charts = squad.RootElement.GetProperty("charts").EnumerateArray().ToList();
+        var byMonth = charts.Single(c => c.GetProperty("title").GetString()!.StartsWith("Goals by month", StringComparison.Ordinal)).GetProperty("chartView");
+        Assert.True(byMonth.GetProperty("stacked").GetBoolean());                                    // stacked home and away…
+        Assert.All(charts.Where(c => !c.GetProperty("title").GetString()!.StartsWith("Goals by month", StringComparison.Ordinal)), c =>
+            Assert.False(c.GetProperty("chartView").TryGetProperty("stacked", out _)));             // …and no one else says so
         var pace = squad.RootElement.GetProperty("charts")[2].GetProperty("chartView").GetProperty("series")[0].GetProperty("marks").EnumerateArray().ToList();
         Assert.Contains(pace, m => m.TryGetProperty("estimated", out var e) && e.GetBoolean());   // projected months are marked…
         Assert.All(pace.Where(m => m.TryGetProperty("estimated", out _)), m =>
