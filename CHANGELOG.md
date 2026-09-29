@@ -5,6 +5,8 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
 ## [Unreleased]
 
+## [0.1.0-preview.5] — 2026-09-29
+
 ### Added
 - **Semi-additive metrics**: `MetricDefinition.Additivity` — `Additive` (the default, as before) or
   `SemiAdditive` for levels such as open issues, a balance or stock on hand. When a report drops one of a
@@ -178,7 +180,8 @@ First public preview: core point model, time and transforms, caching with per-en
 invalidation, chart-agnostic views and JSON contract, report engine, REST host with dashboard, agent tool
 surface, MySQL source.
 
-[Unreleased]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.4...HEAD
+[Unreleased]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.5...HEAD
+[0.1.0-preview.5]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.4...v0.1.0-preview.5
 [0.1.0-preview.4]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.3...v0.1.0-preview.4
 [0.1.0-preview.3]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.2...v0.1.0-preview.3
 [0.1.0-preview.2]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.1...v0.1.0-preview.2
