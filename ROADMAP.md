@@ -21,13 +21,13 @@ cases are welcome as issues.
   pushed down) with top / bottom N rankings, and forecasting (pace, trend, seasonal naïve, Holt /
   Holt-Winters) with projected points marked through every later step, and forecast ranges — including the
   range of an "on pace for" total
-- Sources: DuckDB (tables and Parquet in place, long or wide layout), MySQL
+- Sources: DuckDB (tables and Parquet in place), PostgreSQL / TimescaleDB, SQL Server / Azure SQL, MySQL and
+  ClickHouse — long or wide layouts, pushdown wherever exact, one parity suite against real databases
 - Hosts: REST API with a dashboard, an agent (MCP-style) tool surface
 - Benchmarks: synthetic to 1B rows, NYC taxi, TSBS ([BENCHMARKS.md](docs/BENCHMARKS.md))
 
 ## Next
 
-- **More sources** — ClickHouse, a `SqlDialect` held to the same parity suite.
 - **Round-aligned comparisons** — "after 5 appearances this season vs last": number each entity's
   points in time order and compare by number rather than date. Needs a metric with a row per appearance
   (minutes, or a derived metric): goals alone only have rows for matches with a goal, so numbering them

@@ -19,6 +19,7 @@
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
     <PackageReference Include="Testcontainers.MsSql" Version="4.15.0" />
     <PackageReference Include="Testcontainers.MySql" Version="4.15.0" />
+    <PackageReference Include="Testcontainers.ClickHouse" Version="4.15.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -29,6 +30,7 @@
     <ProjectReference Include="..\..\src\Meridian.Sources.PostgreSql\Meridian.Sources.PostgreSql.csproj" />
     <ProjectReference Include="..\..\src\Meridian.Sources.SqlServer\Meridian.Sources.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\Meridian.Sources.MySql\Meridian.Sources.MySql.csproj" />
+    <ProjectReference Include="..\..\src\Meridian.Sources.ClickHouse\Meridian.Sources.ClickHouse.csproj" />
     <ProjectReference Include="..\..\src\Meridian.Sources.DuckDb\Meridian.Sources.DuckDb.csproj" />
     <ProjectReference Include="..\..\src\Meridian.Transforms\Meridian.Transforms.csproj" />
     <ProjectReference Include="..\..\src\Meridian.Views\Meridian.Views.csproj" />

@@ -33,6 +33,7 @@ entities, timeframe, transforms, view.
 | `Meridian.Sources.PostgreSql` | PostgreSQL / TimescaleDB tables and views — long or wide — with pushdown and batching |
 | `Meridian.Sources.SqlServer` | SQL Server and Azure SQL tables and views — long or wide — with pushdown and batching |
 | `Meridian.Sources.MySql` | MySQL 8 tables and views — long or wide — with pushdown and batching |
+| `Meridian.Sources.ClickHouse` | ClickHouse tables and views — long or wide — with pushdown and batching |
 | `Meridian.Hosts.Mcp` | agent tools: `describe` the catalog, `query` a bounded typed report |
 | `Meridian.Hosts.Http` (sample host) | minimal REST API and the dashboard |
 
@@ -361,6 +362,14 @@ opened, so a `TIMESTAMP` column — which MySQL converts through the session zon
 whatever the server's zone; `DATETIME` and `DATE` are read as stored. The original constructor
 (`MySqlSourceOptions`, one table of one row per value) still works; `SqlSourceOptions` adds views, wide tables and
 dimensions. Quote reserved words (`load`) with backticks in names you pass.
+
+**ClickHouse** pushes down every built-in aggregator. Its own `median` and `quantile` sample above 8,192 values,
+so medians and percentiles use `quantileExactInclusive`, which interpolates as the engine does; first and last use
+`argMinIf` / `argMaxIf`; spread uses the numerically stable `stddevSampStable` / `varSampStable`, returning no value
+(not +∞) for a single reading. ClickHouse timestamps carry a zone that its calendar functions work in, so every
+value is read as a UTC `DateTime64` and all arithmetic is in UTC: a column's zone never moves a bucket. Store
+wall-clock readings and dates as given in a `DateTime64(…, 'UTC')` or `Date` column, so their wall clock is what's
+stored.
 
 Times are compared as timestamps whatever the column's type: a `DATE` compared with 07:30 on 1 January is its
 midnight, so it's outside a timeframe starting then — as the engine places dates.

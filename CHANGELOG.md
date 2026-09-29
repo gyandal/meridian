@@ -5,6 +5,17 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
 ## [Unreleased]
 
+### Added
+- **ClickHouse source** (`Meridian.Sources.ClickHouse`, on the official ClickHouse.Driver): long and wide layouts,
+  dimensions, batching, and every built-in aggregator and bucket pushed down — exact medians and percentiles
+  (`quantileExactInclusive`, not ClickHouse's sampling `median`), first and last, stable spread. Timestamps of any
+  zone are read as UTC. The parity suite runs against ClickHouse 25.8 too, and gains 30,000-value buckets, so an
+  approximate quantile anywhere is caught.
+
+### Fixed
+- SQL sources read raw timestamps through the dialect (`SqlDialect.TimestampValue`), as pushdown already did, so a
+  zoned column type reads as the instant it holds on both paths.
+
 ### Changed
 - **The MySQL source runs on the shared SQL engine.** It was raw-rows-only; it now pushes down mean, sum, min,
   max, count, standard deviation and variance for every bucket (median, percentiles, first and last are computed
