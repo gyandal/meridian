@@ -104,9 +104,16 @@ public sealed class ChartProjector : IChartProjector
             series.Add(new SeriesView(name, seriesColor, marks));
         }
 
+        if (spec.Stacked)
+        {
+            // Stacked, the axis must reach each position's total, not its largest single value.
+            var (low, high) = Stacks.Extent(series);
+            min = low ?? double.PositiveInfinity;
+            max = high ?? double.NegativeInfinity;
+        }
         var axes = BuildAxes(spec, block, options.Calendar, min, max);
         var legend = new LegendView(series.Select(v => v.Name).ToList());
-        return new ChartView(spec.Kind, series, axes, legend, Annotations: []);
+        return new ChartView(spec.Kind, series, axes, legend, Annotations: [], Stacked: spec.Stacked ? true : null);
     }
 
     private static IReadOnlyList<AxisView> BuildAxes(ViewSpec spec, PointBlock block, CalendarContext calendar, double min, double max)

@@ -227,7 +227,8 @@ public sealed record TransformDefinition(
 /// <param name="Kind">line (default), column, area, bar, pie, scatter or table.</param>
 /// <param name="X">"time" (default) or a dimension to use as categories, e.g. "venue".</param>
 /// <param name="SeriesBy">A dimension that splits series, e.g. "player".</param>
-public sealed record ViewDefinition(string? Kind = null, string? X = null, string? SeriesBy = null, string? Title = null)
+/// <param name="Stacked">Stack the series at each x position (stacked columns or areas).</param>
+public sealed record ViewDefinition(string? Kind = null, string? X = null, string? SeriesBy = null, string? Title = null, bool? Stacked = null)
 {
     internal ViewSpec ToView(string path)
     {
@@ -235,7 +236,7 @@ public sealed record ViewDefinition(string? Kind = null, string? X = null, strin
             : Enum.TryParse<ChartKind>(Kind, ignoreCase: true, out var k) ? k
             : throw new DashboardDefinitionException(path + ".kind", $"'{Kind}' isn't a chart kind; use line, column, area, bar, pie, scatter or table.");
         var x = X is null || X.Equals("time", StringComparison.OrdinalIgnoreCase) ? AxisSource.Time : AxisSource.Category(new DimensionId(X));
-        return new ViewSpec(kind, x, SeriesBy is null ? null : new DimensionId(SeriesBy), Title);
+        return new ViewSpec(kind, x, SeriesBy is null ? null : new DimensionId(SeriesBy), Title, Stacked: Stacked ?? false);
     }
 }
 

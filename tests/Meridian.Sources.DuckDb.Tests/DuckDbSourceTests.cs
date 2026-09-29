@@ -1430,6 +1430,29 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.Equal("resample(month,sum,ZeroFill,timeframe)", Resample("timeframe").CacheIdentity);
     }
 
+    [Fact]
+    public async Task A_stored_view_can_stack_and_a_stacked_view_is_cached_apart_from_a_plain_one()
+    {
+        DashboardDefinition Definition(string? stacked) => DashboardDefinition.Parse($$"""
+            {"title":"x","charts":[{"title":"c","series":[{"metric":"goals","dimensions":["venue"],
+              "view":{"kind":"column","seriesBy":"venue"{{(stacked is null ? "" : $",\"stacked\":{stacked}")}}},
+              "transforms":[{"kind":"resample","period":"month","aggregator":"sum"},{"kind":"groupBy","aggregator":"sum","by":["venue"]}]}]}]}
+            """);
+
+        Assert.True(Definition("true").ToDashboard().Charts[0].Series[0].View.Stacked);
+        Assert.False(Definition(null).ToDashboard().Charts[0].Series[0].View.Stacked);
+        Assert.DoesNotContain("stacked", Definition(null).ToJson(), StringComparison.Ordinal); // absent stays absent
+        Assert.Contains("\"stacked\": true", Definition("true").ToJson(), StringComparison.Ordinal);
+
+        // The same report stacked and not: two views, not one cached for both.
+        var engine = MeridianRuntime.InMemory(GoalsCatalog, GoalsSource()).Engine;
+        var context = new DashboardContext("club", [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2)], Season);
+        var plain = await engine.RunDashboardAsync(Definition(null).ToDashboard(), context, ProjectionOptions.Default);
+        var stackedView = await engine.RunDashboardAsync(Definition("true").ToDashboard(), context, ProjectionOptions.Default);
+        Assert.Null(plain.Charts[0].View.Stacked);
+        Assert.True(stackedView.Charts[0].View.Stacked);
+    }
+
     // ---------------------------------------------------------------------------------- semi-additive levels
 
     private static readonly DimensionId FamilyDim = new("family");

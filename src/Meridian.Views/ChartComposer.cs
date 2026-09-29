@@ -51,26 +51,32 @@ public static class ChartComposer
             }
         }
 
-        List<AxisView> axes = [xAxis, ValueAxisFor(parts.Where(p => p.Axis == ValueAxis.Primary).ToList())];
-        if (secondary) axes.Add(ValueAxisFor(parts.Where(p => p.Axis == ValueAxis.Secondary).ToList()));
+        // Stacking, like the chart kind, comes from the first part; a stacked side's axis spans its stacks' totals.
+        bool stacked = parts[0].View.Stacked == true;
+        List<AxisView> axes = [xAxis, ValueAxisFor(parts.Where(p => p.Axis == ValueAxis.Primary).ToList(), stacked ? series.Where(s => s.Axis == 1) : null)];
+        if (secondary) axes.Add(ValueAxisFor(parts.Where(p => p.Axis == ValueAxis.Secondary).ToList(), stacked ? series.Where(s => s.Axis == 2) : null));
 
         return new ChartView(parts[0].View.Kind, series, axes,
             new LegendView(series.Select(s => s.Name).ToList()),
-            [.. parts.SelectMany(p => p.View.Annotations)]);
+            [.. parts.SelectMany(p => p.View.Annotations)],
+            stacked ? true : null);
     }
 
-    private static AxisView ValueAxisFor(List<ChartPart> parts)
+    private static AxisView ValueAxisFor(List<ChartPart> parts, IEnumerable<SeriesView>? stackedSeries)
     {
         if (parts.Count == 0) return new AxisView(AxisKind.Linear, "Value");
         var axes = parts.Select(p => p.View.Axes[1]).ToList();
         var units = axes.Select(a => a.Unit).Distinct().ToList();
         var mins = axes.Where(a => a.Min is not null).Select(a => a.Min!.Value).ToList();
         var maxes = axes.Where(a => a.Max is not null).Select(a => a.Max!.Value).ToList();
+        var (min, max) = stackedSeries is null
+            ? (mins.Count > 0 ? mins.Min() : (double?)null, maxes.Count > 0 ? maxes.Max() : (double?)null)
+            : Stacks.Extent(stackedSeries);
         return new AxisView(
             AxisKind.Linear,
             string.Join(" · ", parts.Select(p => p.Name)),
-            Min: mins.Count > 0 ? mins.Min() : null,
-            Max: maxes.Count > 0 ? maxes.Max() : null,
+            Min: min,
+            Max: max,
             Unit: units.Count == 1 ? units[0] : null);
     }
 }

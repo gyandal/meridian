@@ -16,6 +16,9 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
   one holding its last moment, so a quiet first or last month is a 0 instead of missing. `TransformContext`
   carries the report's `Timeframe`, set by the engine for every report and each comparison's baseline, and
   kept when a resample is pushed down. The default (`FillAcross.Observed`) and its cache keys are unchanged.
+- **Stacked views**: `ViewSpec.Stacked` (`"stacked": true` in dashboard definitions) sets `ChartView.Stacked`,
+  omitted unless true, and sizes the value axis to the stacks' totals. `ChartComposer` takes it from the
+  first part. The demo dashboard draws stacked columns (goals by month, home and away).
 - **.NET 8 and 9 support.** Every package now targets `net8.0`, `net9.0` and `net10.0`, and the whole test
   suite runs on all three. Each app gets the build for its runtime, so .NET 10 apps keep the net10.0 build
   (and its faster runtime — see docs/BENCHMARKS.md). The only newer API in use, `System.Threading.Lock`,

@@ -586,6 +586,7 @@ public sealed class ReportEngine(
         var axis = view.XAxis is CategoryAxisSource c ? "cat:" + c.Dimension.Name : "time";
         parts.AddRange([view.Kind, axis, view.SeriesBy?.Name, view.ValueAxisTitle, view.ValueUnit?.Symbol, (view.Status as ICacheIdentity)?.CacheIdentity,
             options.Calendar.Zone.Id, options.Calendar.WeekStart, season.CacheIdentity]);
+        if (view.Stacked) parts.Add("stacked"); // only stacked views change their key
         return string.Join('‖', parts);
     }
 

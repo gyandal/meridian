@@ -275,6 +275,12 @@ kind (columns, line, area), series get distinct colours and names ("Goals", or "
 part has a series per entity), and each side gets one value axis built from its parts. Parts must share
 the x-axis. A dashboard runs all its charts through `RunChartsAsync` to share fetches across them.
 
+**Stacking** is part of the view: `ViewSpec(…, Stacked: true)` (`"stacked": true` in a dashboard definition)
+sets `ChartView.Stacked`, and the value axis then spans each x position's stacked total — positives up from 0,
+negatives down — rather than its largest single value, so stacks aren't clipped. A composed chart takes
+stacking from its first part, as it does the chart kind, and stacks across all parts on an axis. Views that
+don't stack omit the property, so their JSON is unchanged.
+
 ## Dashboards
 
 A `Dashboard` is a set of charts defined against a shared `DashboardContext` — tenant, entities,
