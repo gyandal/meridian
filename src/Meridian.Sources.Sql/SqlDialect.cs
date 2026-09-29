@@ -38,6 +38,12 @@ public abstract class SqlDialect : IDisposable
         command.Parameters.Add(parameter);
     }
 
+    /// <summary>
+    /// The timestamp column as a plain timestamp (no zone) that arithmetic and truncation can work on. A database
+    /// whose zoned type keeps each value's own offset (SQL Server's <c>datetimeoffset</c>) normalises it to UTC here.
+    /// </summary>
+    public virtual string TimestampValue(string column) => column;
+
     /// <summary>The expression as a double-precision number.</summary>
     public virtual string ToDouble(string expression) => $"CAST({expression} AS DOUBLE PRECISION)";
 

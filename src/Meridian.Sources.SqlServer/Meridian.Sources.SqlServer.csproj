@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>$(SupportedTargetFrameworks)</TargetFrameworks>
+    <Description>Meridian IPointSource over SQL Server and Azure SQL: long or wide tables and views, with calendar bucketing and the standard aggregators pushed down into SQL, exactly.</Description>
+    <PackageTags>$(PackageTags);sqlserver;azure-sql</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Meridian.Sources.Sql/Meridian.Sources.Sql.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.0" />
+  </ItemGroup>
+</Project>

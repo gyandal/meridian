@@ -26,7 +26,8 @@ public abstract class SqlParityTests(IDatabaseFixture db)
     private static readonly MetricDefinition LegacyNyDef = new(new MetricId("legacy-ny"), "Legacy NY", new Unit("au"), "mean", [Athlete], TimeGrain.Instant);
     private static readonly MetricDefinition GoalsDef = new(new MetricId("goals"), "Goals", Unit.None, "sum", [Athlete, Venue], TimeGrain.Instant);
     private static readonly MetricDefinition TypedDef = new(new MetricId("typed"), "Typed", Unit.None, "sum", [Athlete], TimeGrain.Instant);
-    private static readonly InMemoryMetricCatalog Catalog = new([LoadDef, HrDef, WellnessDef, LegacyDef, LegacyNyDef, GoalsDef, TypedDef]);
+    private static readonly MetricDefinition IntsDef = new(new MetricId("ints"), "Ints", Unit.None, "mean", [Athlete], TimeGrain.Instant);
+    private static readonly InMemoryMetricCatalog Catalog = new([LoadDef, HrDef, WellnessDef, LegacyDef, LegacyNyDef, GoalsDef, TypedDef, IntsDef]);
 
     // Starts mid-day and ends mid-week so partial first/last buckets are exercised on every path.
     private static readonly DateInterval Timeframe = new(
@@ -60,18 +61,34 @@ public abstract class SqlParityTests(IDatabaseFixture db)
         new ViewSpec(ChartKind.Line, AxisSource.Time, SeriesBy: Athlete),
         Transform.Resample(period, aggregator, gap));
 
-    /// <summary>The report pushed down equals the engine's result from raw rows, and DuckDB's result for the same data.</summary>
-    private async Task AssertParity(IRollupPointSource source, IRollupPointSource reference, PipelineSpec spec, ProjectionOptions options, string context)
+    /// <summary>
+    /// Aggregators this database has no exact SQL for: reports using them must fall back to a raw fetch (and still give
+    /// the same answer). Everything else must push down.
+    /// </summary>
+    protected virtual IReadOnlySet<string> Declined => new HashSet<string>();
+
+    /// <summary>A column name as written in this database's SQL (a reserved word needs quoting).</summary>
+    protected virtual string Column(string name) => name;
+
+    /// <summary>
+    /// The report equals the engine's result from raw rows and DuckDB's result for the same data — pushed down in one
+    /// query unless <paramref name="aggregator"/> is one this database declines, when it's fetched raw instead.
+    /// </summary>
+    private async Task AssertParity(IRollupPointSource source, IRollupPointSource reference, PipelineSpec spec, ProjectionOptions options, string context, string? aggregator = null)
     {
         var counting = new CountingSource(source);
         var pushed = await MeridianRuntime.InMemory(Catalog, counting).Engine.RunAsync(spec, options);
         var inEngine = await MeridianRuntime.InMemory(Catalog, new RawOnly(source)).Engine.RunAsync(spec, options);
         var duckDb = await MeridianRuntime.InMemory(Catalog, reference).Engine.RunAsync(spec, options);
 
-        Assert.True(counting.Rollups == 1 && counting.Raws == 0, $"{context}: expected one pushed-down query, got {counting.Rollups} rollups and {counting.Raws} raw fetches");
+        bool declined = aggregator is not null && Declined.Contains(aggregator);
+        Assert.True(declined ? counting.Rollups == 0 && counting.Raws == 1 : counting.Rollups == 1 && counting.Raws == 0,
+            $"{context}: expected {(declined ? "a raw fetch" : "one pushed-down query")}, got {counting.Rollups} rollups and {counting.Raws} raw fetches");
         Same.View(inEngine, pushed, context + " (pushdown vs engine)");
         Same.View(duckDb, pushed, context + " (vs DuckDB)");
     }
+
+    private Dictionary<string, string> WideColumns() => new() { ["load"] = Column("load"), ["hr"] = Column("hr") };
 
     // ------------------------------------------------------------------------------------------ raw reads
 
@@ -90,14 +107,14 @@ public abstract class SqlParityTests(IDatabaseFixture db)
             "legacy_ny" => Table(LegacyNyDef, StoredTime.InZone("America/New_York", new LocalTimeResolution(AmbiguousTime.Later))),
             "goals" => Table(GoalsDef, dimensions: GoalDimensions),
             "typed" => Table(TypedDef),
-            _ => Table(LoadDef, columns: new Dictionary<string, string> { ["load"] = "load", ["hr"] = "hr" }),
+            _ => Table(LoadDef, columns: WideColumns()),
         };
         (MetricDefinition, StoredTime?, IReadOnlyDictionary<string, string>?, IReadOnlyDictionary<string, string>?, string) Table(
             MetricDefinition m, StoredTime? t = null, IReadOnlyDictionary<string, string>? dimensions = null,
             IReadOnlyDictionary<string, string>? columns = null, string? reference = null) => (m, t, dimensions, columns, reference ?? table);
         IReadOnlyList<EntityRef> entities = [new EntityRef(Athlete, 1), new EntityRef(Athlete, 2), new EntityRef(Athlete, 3)];
 
-        var expected = await Reference(reference, time, dimensions, columns).FetchAsync(metric, entities, Year);
+        var expected = await Reference(reference, time, dimensions, columns is null ? null : new Dictionary<string, string> { ["load"] = "load", ["hr"] = "hr" }).FetchAsync(metric, entities, Year);
         var actual = await Source(table, time, dimensions, columns).FetchAsync(metric, entities, Year);
 
         Assert.True(expected.Count > 0, $"{table}: the reference has no rows to compare");
@@ -125,7 +142,7 @@ public abstract class SqlParityTests(IDatabaseFixture db)
     {
         Skip.If(db.SkipReason is not null, db.SkipReason);
         await AssertParity(Source(), Reference(), Spec(LoadDef, PeriodNamed(period), Aggregator(aggregator), gap), In(zone),
-            $"{zone} {period} {aggregator} {gap}");
+            $"{zone} {period} {aggregator} {gap}", aggregator);
     }
 
     public static TheoryData<AmbiguousTime, string, string, string> WallClockCases()
@@ -148,7 +165,7 @@ public abstract class SqlParityTests(IDatabaseFixture db)
         Skip.If(db.SkipReason is not null, db.SkipReason);
         var time = StoredTime.InZone("America/New_York", new LocalTimeResolution(ambiguous));
         await AssertParity(Source("legacy_ny", time), Reference("legacy_ny", time),
-            Spec(LegacyNyDef, PeriodNamed(period), Aggregator(aggregator), GapPolicy.LeaveMissing, Year), In(zone), $"{ambiguous} {zone} {period} {aggregator}");
+            Spec(LegacyNyDef, PeriodNamed(period), Aggregator(aggregator), GapPolicy.LeaveMissing, Year), In(zone), $"{ambiguous} {zone} {period} {aggregator}", aggregator);
     }
 
     public static TheoryData<string, string> LocalCases()
@@ -168,7 +185,19 @@ public abstract class SqlParityTests(IDatabaseFixture db)
     {
         Skip.If(db.SkipReason is not null, db.SkipReason);
         await AssertParity(Source("wellness", StoredTime.Local), Reference("wellness", StoredTime.Local),
-            Spec(WellnessDef, PeriodNamed(period), Aggregator(aggregator), GapPolicy.ZeroFill), In("Pacific/Auckland"), $"{period} {aggregator}");
+            Spec(WellnessDef, PeriodNamed(period), Aggregator(aggregator), GapPolicy.ZeroFill), In("Pacific/Auckland"), $"{period} {aggregator}", aggregator);
+    }
+
+    [SkippableTheory]
+    [InlineData("mean")]
+    [InlineData("sum")]
+    [InlineData("stddev")]
+    [InlineData("variance")]
+    public async Task Integer_columns_aggregate_as_numbers_not_integers(string aggregator)
+    {
+        // A mean of whole numbers is rarely whole; a database that averages integers as integers would truncate it.
+        Skip.If(db.SkipReason is not null, db.SkipReason);
+        await AssertParity(Source("ints"), Reference("ints"), Spec(IntsDef, Period.Week, Aggregator(aggregator), GapPolicy.LeaveMissing), In("UTC"), aggregator, aggregator);
     }
 
     [SkippableTheory]
@@ -212,7 +241,7 @@ public abstract class SqlParityTests(IDatabaseFixture db)
     public async Task A_wide_table_fetches_every_metric_in_one_query_and_matches_its_long_form(string period)
     {
         Skip.If(db.SkipReason is not null, db.SkipReason);
-        var columns = new Dictionary<string, string> { ["load"] = "load", ["hr"] = "hr" };
+        var columns = WideColumns();
         PipelineSpec For(MetricDefinition m) => Spec(m, PeriodNamed(period), Aggregators.Max, GapPolicy.LeaveMissing);
 
         var counting = new CountingSource(Source("wide", metricColumns: columns));
@@ -226,3 +255,11 @@ public abstract class SqlParityTests(IDatabaseFixture db)
 }
 
 public sealed class PostgreSqlParityTests(PostgreSqlFixture db) : SqlParityTests(db), IClassFixture<PostgreSqlFixture>;
+
+public sealed class SqlServerParityTests(SqlServerFixture db) : SqlParityTests(db), IClassFixture<SqlServerFixture>
+{
+    // No aggregate form of a median, a percentile, or first/last in time: those run in the engine.
+    protected override IReadOnlySet<string> Declined { get; } = new HashSet<string> { "median", "p90", "first", "last" };
+
+    protected override string Column(string name) => $"[{name}]";
+}
