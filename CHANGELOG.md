@@ -5,6 +5,14 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
 ## [Unreleased]
 
+### Changed
+- **The MySQL source runs on the shared SQL engine.** It was raw-rows-only; it now pushes down mean, sum, min,
+  max, count, standard deviation and variance for every bucket (median, percentiles, first and last are computed
+  in the engine), fetches many metrics in one query, and — through a new constructor taking `SqlSourceOptions` —
+  reads views, wide tables and dimensions. Sessions run in UTC, so `TIMESTAMP` columns read as the instants they
+  store whatever the server's zone. The `MySqlSourceOptions` constructor is unchanged. The database parity suite
+  runs against MySQL 8.4 too (1,265 cases).
+
 ## [0.1.0-preview.6] — 2026-09-29
 
 ### Added

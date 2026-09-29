@@ -32,7 +32,7 @@ entities, timeframe, transforms, view.
 | `Meridian.Sources.DuckDb` | DuckDB tables or Parquet in place — long (row per value) or wide (column per metric) — with pushdown and batching |
 | `Meridian.Sources.PostgreSql` | PostgreSQL / TimescaleDB tables and views — long or wide — with pushdown and batching |
 | `Meridian.Sources.SqlServer` | SQL Server and Azure SQL tables and views — long or wide — with pushdown and batching |
-| `Meridian.Sources.MySql` | a MySQL datapoints table |
+| `Meridian.Sources.MySql` | MySQL 8 tables and views — long or wide — with pushdown and batching |
 | `Meridian.Hosts.Mcp` | agent tools: `describe` the catalog, `query` a bounded typed report |
 | `Meridian.Hosts.Http` (sample host) | minimal REST API and the dashboard |
 
@@ -354,6 +354,13 @@ normalised to UTC with each value's own offset before bucketing; `datetime2`, `d
 stored. Means and sums are taken in `float`, so an `int` column's mean isn't truncated. Metric names are sent as
 `varchar`, which keeps index seeks on a `varchar` or `nvarchar` metric column. Microsoft.Data.SqlClient doesn't
 run in globalization-invariant mode: an app using this source must leave `InvariantGlobalization` off.
+
+**MySQL** (8.0.17 and later) pushes down the same aggregators as SQL Server, for every bucket, and computes median,
+percentiles, first and last in the engine for the same reason. Each connection's session is put in UTC when it's
+opened, so a `TIMESTAMP` column — which MySQL converts through the session zone — reads as the instant it stores,
+whatever the server's zone; `DATETIME` and `DATE` are read as stored. The original constructor
+(`MySqlSourceOptions`, one table of one row per value) still works; `SqlSourceOptions` adds views, wide tables and
+dimensions. Quote reserved words (`load`) with backticks in names you pass.
 
 Times are compared as timestamps whatever the column's type: a `DATE` compared with 07:30 on 1 January is its
 midnight, so it's outside a timeframe starting then — as the engine places dates.

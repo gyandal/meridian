@@ -27,8 +27,7 @@ cases are welcome as issues.
 
 ## Next
 
-- **More sources** — MySQL moved onto the shared SQL engine (today it reads raw rows only), then ClickHouse;
-  each a `SqlDialect` held to the same parity suite.
+- **More sources** — ClickHouse, a `SqlDialect` held to the same parity suite.
 - **Round-aligned comparisons** — "after 5 appearances this season vs last": number each entity's
   points in time order and compare by number rather than date. Needs a metric with a row per appearance
   (minutes, or a derived metric): goals alone only have rows for matches with a goal, so numbering them
