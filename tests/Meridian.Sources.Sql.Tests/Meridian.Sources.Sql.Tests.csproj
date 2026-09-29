@@ -8,6 +8,8 @@
     <IsPackable>false</IsPackable>
     <!-- Microsoft.Data.SqlClient doesn't support globalization-invariant mode, which the repo enables by default. -->
     <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- Each runtime's run starts every database in a container; one runtime at a time keeps a CI runner's memory in hand. -->
+    <TestTfmsInParallel>false</TestTfmsInParallel>
   </PropertyGroup>
 
   <ItemGroup>
