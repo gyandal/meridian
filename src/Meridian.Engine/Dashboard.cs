@@ -26,7 +26,8 @@ public sealed record DashboardSeries(
     ImmutableArray<DimensionId> Dimensions = default,
     string? Name = null,
     ValueAxis Axis = ValueAxis.Primary,
-    Comparison? Comparison = null);
+    Comparison? Comparison = null,
+    double? MinimumDenominator = null);
 
 public sealed record DashboardChart(string Title, IReadOnlyList<DashboardSeries> Series);
 
@@ -37,7 +38,7 @@ public sealed record Dashboard(string Title, IReadOnlyList<DashboardChart> Chart
     public IReadOnlyList<ChartSpec> For(DashboardContext context) => [.. Charts.Select(chart => new ChartSpec(
         [.. chart.Series.Select(s => new SeriesSpec(
             PipelineSpec.Create(context.Tenant, s.Metric, context.Entities, context.Timeframe, s.View, [.. s.Transforms])
-                .WithDimensions([.. s.Dimensions.IsDefault ? [] : s.Dimensions]) with { Comparison = s.Comparison },
+                .WithDimensions([.. s.Dimensions.IsDefault ? [] : s.Dimensions]) with { Comparison = s.Comparison, MinimumDenominator = s.MinimumDenominator },
             s.Name, s.Axis))]))];
 }
 

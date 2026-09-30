@@ -18,7 +18,7 @@ cases are welcome as issues.
   value), sums and differences of metrics, shares of a total, comparisons with an earlier period
   (year-on-year, season-on-season, the same week last year; overlay, difference or % change) and running
   totals, and aggregators beyond the basics (first, standard deviation, variance, any percentile — all
-  pushed down) with top / bottom N rankings, and forecasting (pace, trend, seasonal naïve, Holt /
+  pushed down) with top / bottom N rankings and qualifying thresholds for rates, and forecasting (pace, trend, seasonal naïve, Holt /
   Holt-Winters) with projected points marked through every later step, and forecast ranges — including the
   range of an "on pace for" total
 - Sources: DuckDB (tables and Parquet in place), PostgreSQL / TimescaleDB, SQL Server / Azure SQL, MySQL and
@@ -33,9 +33,6 @@ cases are welcome as issues.
   (minutes, or a derived metric): goals alone only have rows for matches with a goal, so numbering them
   would count scoring matches.
 - **Index to a baseline** — each value as a percentage of its value at the start of the timeframe.
-- **Qualifying thresholds for rates** — "top 5 by goals per 90, minimum 450 minutes". Without one, a
-  ten-minute cameo with a goal (9 per 90) tops any ranking of a rate; the threshold belongs on the
-  denominator's total, which a filter on the rate can't see.
 - **Redis cache backend** — `IPointCacheStore` over Redis, passing the shared conformance suite.
 - **MCP server** — bind the transport-agnostic agent tools to the Model Context Protocol.
 

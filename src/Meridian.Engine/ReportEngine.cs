@@ -177,6 +177,7 @@ public sealed class ReportEngine(
 
         if (metric.Formula is null)
         {
+            if (spec.MinimumDenominator is not null) throw NotARatio(metric);
             return new Request(spec, metric, [PlanFor(spec, metric, options)], Formula: null, After: []);
         }
         var formula = metric.Formula;
@@ -208,6 +209,7 @@ public sealed class ReportEngine(
                 $"its inputs ({string.Join(", ", formula.Inputs)}) separately, which is rarely meant. Filter or rank the result instead: place it after the last aggregation.", nameof(spec));
         }
         var after = spec.Transforms.Skip(last + 1).ToImmutableArray();
+        if (spec.MinimumDenominator is not null && formula is not RatioFormula) throw NotARatio(metric);
         if (formula is RatioFormula && after.OfType<IShareTransform>().Any())
         {
             throw new ArgumentException(
@@ -392,7 +394,7 @@ public sealed class ReportEngine(
         var blocks = request.Inputs.Select(p => Apply(p.Transforms, KeepOnly(raws[p.LoadKey], p.Keep, p.Metric.Additivity), context)).ToList();
         var combined = request.Formula switch
         {
-            RatioFormula ratio => Ratio(blocks[0], blocks[1], ratio.Scale, request.Metric.Unit),
+            RatioFormula ratio => Ratio(blocks[0], blocks[1], ratio.Scale, request.Metric.Unit, request.Spec.MinimumDenominator),
             LinearFormula linear => Linear(blocks, linear, request.Metric.Unit),
             _ => blocks[0],
         };
@@ -409,7 +411,10 @@ public sealed class ReportEngine(
     /// numerator ÷ denominator × scale for each (key, time) the denominator has. A missing numerator is 0 —
     /// no goal rows means no goals — while a missing or zero denominator gives no value at all.
     /// </summary>
-    private static PointBlock Ratio(PointBlock numerator, PointBlock denominator, double scale, Unit unit)
+    private static ArgumentException NotARatio(MetricDefinition metric) => new(
+        $"A minimum denominator is a qualifying threshold for a ratio (goals per 90, minimum 450 minutes); '{metric.Id}' isn't a ratio metric.", "spec");
+
+    private static PointBlock Ratio(PointBlock numerator, PointBlock denominator, double scale, Unit unit, double? minimum)
     {
         if (numerator.Count > 0 && denominator.Count > 0 && numerator.Time.Kind != denominator.Time.Kind)
         {
@@ -427,7 +432,8 @@ public sealed class ReportEngine(
         for (int i = 0; i < denominator.Count; i++)
         {
             double d = denominator.Values[i];
-            if ((denominator.Flags[i] & MeasureFlags.Missing) != 0 || d == 0) continue;
+            // No denominator, zero, or less than the qualifying minimum: no value.
+            if ((denominator.Flags[i] & MeasureFlags.Missing) != 0 || d == 0 || d < minimum) continue;
             var n = totals.TryGetValue((denominator.Keys[i], denominator.AtTicks[i]), out var v) ? v : Measurement.Of(0);
             long at = denominator.AtTicks[i];
             bool estimated = n.IsEstimated || (denominator.Flags[i] & MeasureFlags.Estimated) != 0;
@@ -567,6 +573,7 @@ public sealed class ReportEngine(
         if (views is null) return null;
 
         var parts = new List<object?> { request.Metric.Id, request.Metric.Formula?.ToString(), request.Spec.Comparison?.ToString() };
+        if (request.Spec.MinimumDenominator is { } minimum) parts.Add("min:" + minimum.ToString("R", System.Globalization.CultureInfo.InvariantCulture)); // only when set
         foreach (var plan in request.AllInputs)
         {
             var s = plan.Scope;

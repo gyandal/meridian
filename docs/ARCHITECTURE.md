@@ -130,8 +130,13 @@ ranks within groups (the top three at each venue). Exactly n are kept — ties g
 with no score aren't ranked. A ranking reads values, so for a derived metric it must come after the last
 aggregation; before it, each input would be ranked on its own.
 
-Ranking a rate has a trap Meridian doesn't yet guard: a ten-minute cameo with a goal is 9 goals per 90.
-Qualifying thresholds on a ratio's denominator are on the roadmap.
+Ranking a rate has a trap: a ten-minute cameo with a goal is 9 goals per 90, and tops any ranking. A filter on the
+rate can't fix it — the rate doesn't know the minutes behind it. So a ratio report can set a **qualifying
+threshold** on its denominator: `spec.WithMinimumDenominator(450)` (`"minimumDenominator": 450` on a dashboard
+series). It applies wherever the ratio is computed — per player over the season after a total, per month after a
+monthly resample, on the totals so far after a running total (a player qualifies once their minutes reach it) — and
+below it there's no value, as with no minutes at all, so rankings, shares and charts leave the player out. Exactly
+the threshold qualifies. It's part of the view's cache key, and only ratio metrics take one.
 
 ## Derived metrics
 

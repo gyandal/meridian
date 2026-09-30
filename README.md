@@ -165,7 +165,7 @@ committed benchmark run, with history.
 
 ## Roadmap
 
-In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: qualifying thresholds for rates, round-aligned comparisons, a Redis cache backend and
+In preview (`0.1.0-preview.x`); APIs may change before 1.0. Next up: round-aligned comparisons, a Redis cache backend and
 an MCP server. Later: scenario modelling. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
