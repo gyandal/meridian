@@ -5,6 +5,8 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
 ## [Unreleased]
 
+## [0.1.0-preview.7] — 2026-09-30
+
 ### Added
 - **ClickHouse source** (`Meridian.Sources.ClickHouse`, on the official ClickHouse.Driver): long and wide layouts,
   dimensions, batching, and every built-in aggregator and bucket pushed down — exact medians and percentiles
@@ -223,7 +225,8 @@ First public preview: core point model, time and transforms, caching with per-en
 invalidation, chart-agnostic views and JSON contract, report engine, REST host with dashboard, agent tool
 surface, MySQL source.
 
-[Unreleased]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.6...HEAD
+[Unreleased]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.7...HEAD
+[0.1.0-preview.7]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.6...v0.1.0-preview.7
 [0.1.0-preview.6]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.5...v0.1.0-preview.6
 [0.1.0-preview.5]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.4...v0.1.0-preview.5
 [0.1.0-preview.4]: https://github.com/gyandal/meridian/compare/v0.1.0-preview.3...v0.1.0-preview.4
