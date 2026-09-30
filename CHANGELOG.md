@@ -5,6 +5,13 @@ versions follow [SemVer](https://semver.org/). Preview releases may change APIs.
 
 ## [Unreleased]
 
+### Added
+- **Qualifying thresholds for rates**: `PipelineSpec.WithMinimumDenominator(450)` (`"minimumDenominator": 450` on a
+  dashboard series) gives a ratio metric no value wherever its denominator's total is below the minimum — so "top 5
+  by goals per 90, minimum 450 minutes" leaves out a ten-minute cameo. It applies where the ratio is computed (per
+  total, per bucket, or on running totals, where a player qualifies once their minutes reach it), pushes down as
+  before, and is part of the view's cache key. Only ratio metrics take one.
+
 ## [0.1.0-preview.7] — 2026-09-30
 
 ### Added

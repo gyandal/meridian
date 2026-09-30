@@ -47,6 +47,7 @@ public sealed record ChartDefinition(string Title, IReadOnlyList<SeriesDefinitio
 
 /// <param name="Axis">"primary" (default) or "secondary".</param>
 /// <param name="Compare">Compare with an earlier period, e.g. <c>{ "unit": "season", "back": 1 }</c> for last season.</param>
+/// <param name="MinimumDenominator">For a ratio metric, a qualifying threshold: e.g. 450 (minutes) for goals per 90.</param>
 public sealed record SeriesDefinition(
     string Metric,
     IReadOnlyList<TransformDefinition>? Transforms = null,
@@ -54,7 +55,8 @@ public sealed record SeriesDefinition(
     IReadOnlyList<string>? Dimensions = null,
     string? Name = null,
     string? Axis = null,
-    CompareDefinition? Compare = null)
+    CompareDefinition? Compare = null,
+    double? MinimumDenominator = null)
 {
     internal DashboardSeries ToSeries(string path)
     {
@@ -72,7 +74,9 @@ public sealed record SeriesDefinition(
             [.. (Dimensions ?? []).Select(d => new DimensionId(d))],
             Name,
             axis,
-            Compare?.ToComparison(path + ".compare"));
+            Compare?.ToComparison(path + ".compare"),
+            MinimumDenominator is null or (> 0 and < double.PositiveInfinity) ? MinimumDenominator
+                : throw new DashboardDefinitionException(path + ".minimumDenominator", "a qualifying minimum is a positive amount, e.g. 450 (minutes)."));
     }
 }
 

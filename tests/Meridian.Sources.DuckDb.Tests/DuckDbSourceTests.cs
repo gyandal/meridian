@@ -1291,6 +1291,48 @@ public class DuckDbSourceTests(DuckDbFixture db) : IClassFixture<DuckDbFixture>
         Assert.True(stackedView.Charts[0].View.Stacked);
     }
 
+    [Fact]
+    public async Task A_qualifying_minimum_pushes_down_and_drops_exactly_the_months_below_it()
+    {
+        // Each player's goals per 90 per month, counted only in months with at least 250 minutes.
+        var report = SeasonReport(GoalsPer90.Id, Season2425, new ViewSpec(ChartKind.Column, AxisSource.Time, SeriesBy: Athlete),
+            Transform.Resample(Period.Month, Aggregators.Sum, GapPolicy.LeaveMissing)).WithMinimumDenominator(250);
+
+        var counting = new CountingSource(SeasonsSource());
+        var viaSql = await MeridianRuntime.InMemory(AppCatalog, counting).Engine.RunAsync(report, ProjectionOptions.Default);
+        var inEngine = await MeridianRuntime.InMemory(AppCatalog, new RawOnly(SeasonsSource())).Engine.RunAsync(report, ProjectionOptions.Default);
+        Assert.Single(counting.Batches);
+        AssertSameView(inEngine, viaSql);
+
+        var expected = db.Rows("""
+            SELECT entity_id, strftime(date_trunc('month', ts), '%Y-%m'),
+                   90 * coalesce(sum(value) FILTER (WHERE metric = 'goals'), 0) / sum(value) FILTER (WHERE metric = 'minutes')
+            FROM seasons WHERE ts >= TIMESTAMP '2024-07-01' AND ts < TIMESTAMP '2025-07-01'
+            GROUP BY 1, 2 HAVING sum(value) FILTER (WHERE metric = 'minutes') >= 250 ORDER BY 1, 2
+            """, r => (Athlete: $"athlete {r.GetInt64(0)}", Month: r.GetString(1), Value: r.GetDouble(2)));
+        var actual = viaSql.Series.SelectMany(s => s.Marks.Select(m => (Athlete: s.Name, Month: m.Label, Value: m.Value!.Value))).ToList();
+        Assert.Equal(expected.Select(e => (e.Athlete, e.Month)), actual.Select(a => (a.Athlete, a.Month)));
+        Assert.True(expected.Count < 36, "some player-months should fall below the minimum");
+        for (int i = 0; i < expected.Count; i++) Assert.Equal(expected[i].Value, actual[i].Value, 9);
+    }
+
+    [Theory]
+    [InlineData("""{"title":"x","charts":[{"title":"c","series":[{"metric":"goals-per-90","minimumDenominator":-5}]}]}""", "charts[0].series[0].minimumDenominator")]
+    public void A_bad_qualifying_minimum_names_its_path(string json, string path) =>
+        Assert.Equal(path, Assert.Throws<DashboardDefinitionException>(() => DashboardDefinition.Parse(json).ToDashboard()).Path);
+
+    [Fact]
+    public void A_stored_series_can_carry_a_qualifying_minimum()
+    {
+        var series = DashboardDefinition.Parse("""
+            {"title":"x","charts":[{"title":"c","series":[{"metric":"goals-per-90","minimumDenominator":450,
+              "transforms":[{"kind":"total","aggregator":"sum","by":["athlete"]},{"kind":"top","n":5,"aggregator":"sum"}]}]}]}
+            """).ToDashboard().Charts[0].Series[0];
+        Assert.Equal(450, series.MinimumDenominator);
+        var context = new DashboardContext("club", [new EntityRef(Athlete, 1)], Season2425);
+        Assert.Equal(450, Assert.Single(new Dashboard("x", [new DashboardChart("c", [series])]).For(context)[0].Series).Report.MinimumDenominator);
+    }
+
     // ---------------------------------------------------------------------------------- semi-additive levels
 
     private static readonly DimensionId FamilyDim = new("family");

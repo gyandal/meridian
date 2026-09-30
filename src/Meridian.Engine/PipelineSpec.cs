@@ -32,6 +32,24 @@ public sealed record PipelineSpec(
     /// <summary>This report, keeping <paramref name="dimensions"/> as well as the entity.</summary>
     public PipelineSpec WithDimensions(params DimensionId[] dimensions) => this with { Dimensions = [.. dimensions] };
 
+    /// <summary>
+    /// For a ratio metric (goals per 90), the least of its denominator (minutes) a bucket or group needs to have a
+    /// value: a qualifying threshold. Null (the default) needs only more than zero. See <see cref="WithMinimumDenominator"/>.
+    /// </summary>
+    public double? MinimumDenominator { get; init; }
+
+    /// <summary>
+    /// This report, where the ratio only counts with at least <paramref name="minimum"/> of its denominator behind it —
+    /// top five by goals per 90, minimum 450 minutes. It applies wherever the ratio is computed: per player over the
+    /// season after a total, per month after a monthly resample, or on the totals so far after a running total (a
+    /// player qualifies once their minutes reach it). Below it there's no value, as with no minutes at all, so rankings,
+    /// shares and charts leave the player out. Only for ratio metrics.
+    /// </summary>
+    public PipelineSpec WithMinimumDenominator(double minimum) =>
+        minimum > 0 && double.IsFinite(minimum)
+            ? this with { MinimumDenominator = minimum }
+            : throw new ArgumentOutOfRangeException(nameof(minimum), minimum, "A qualifying minimum is a positive amount of the denominator, e.g. 450 minutes.");
+
     /// <summary>Set by <see cref="Earlier"/> or <see cref="ChangeFrom"/>: what this report is compared with.</summary>
     public Comparison? Comparison { get; init; }
 
